@@ -161,7 +161,12 @@ export function VideoQueueProvider({ children }: { children: React.ReactNode }) 
                   const folder = item.folder || item.job?.metadata?.folder || undefined;
                   
                   try {
-                    await downloadThenUploadToGallery(generation.id, fileName, metadata, folder);
+                    const { uploadResponse } = await downloadThenUploadToGallery(
+                      generation.id, 
+                      fileName, 
+                      metadata, 
+                      folder
+                    );
                     
                     // Analyze the video if analysis is enabled for this queue item
                     const queueItem = queueItems.find(item => item.job?.id === updatedJob.id);
@@ -172,7 +177,9 @@ export function VideoQueueProvider({ children }: { children: React.ReactNode }) 
                         // Wait 10 seconds for Azure Blob Storage to propagate the uploaded video
                         await new Promise(resolve => setTimeout(resolve, 10000));
                         
-                        await analyzeAndUpdateVideoMetadata(fileName);
+                        // Use the actual blob name returned from upload (includes folder path)
+                        const blobName = uploadResponse?.blob_name || fileName;
+                        await analyzeAndUpdateVideoMetadata(blobName);
                         
                         // Don't show individual analysis toasts - we'll show a consolidated one later
                                               } catch (analysisError) {
@@ -349,14 +356,15 @@ export function VideoQueueProvider({ children }: { children: React.ReactNode }) 
           jobMetadata.analyzeVideo = settings.analyzeVideo.toString();
         }
         
-        // Check if we should use the unified endpoint with analysis
-        // IMPORTANT: Skip unified endpoint when sourceImages are provided (multipart not supported there)
-        if (settings.analyzeVideo && (!settings.sourceImages || settings.sourceImages.length === 0)) {
+        // Prefer unified endpoint when analysis is requested (supports optional images)
+        if (settings.analyzeVideo) {
           // Use the unified endpoint that handles generation + analysis atomically
           const unifiedRequest: VideoGenerationWithAnalysisRequest = {
             ...apiRequest,
             analyze_video: true,
-            metadata: jobMetadata
+            metadata: jobMetadata,
+            // Pass images for image+text flow
+            sourceImages: settings.sourceImages,
           };
           
           try {
@@ -414,10 +422,9 @@ export function VideoQueueProvider({ children }: { children: React.ReactNode }) 
           const job = await createVideoGenerationJob({
             ...apiRequest,
             metadata: jobMetadata,
-            // Pass images and analyze/folder form fields for compatibility
+            // Pass images and folder for compatibility
             sourceImages: settings.sourceImages,
             folder_path: settings.folder,
-            analyze_video: settings.analyzeVideo,
           });
           
           // Update the queue item with the real job ID and data

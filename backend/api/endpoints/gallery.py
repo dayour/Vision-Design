@@ -453,7 +453,10 @@ async def upload_asset(
         if cosmos_service:
             try:
                 # Prepare metadata for Cosmos DB
+                # Derive stable asset_id from blob name (filename without folder/extension)
+                asset_id = result["blob_name"].split(".")[0].split("/")[-1]
                 cosmos_data = {
+                    "id": asset_id,
                     "media_type": media_type.value,
                     "blob_name": result["blob_name"],
                     "container": result["container"],
