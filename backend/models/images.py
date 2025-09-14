@@ -235,6 +235,31 @@ class ImageAnalyzeRequest(BaseModel):
         return v
 
 
+class ImageAnalyzeCustomRequest(BaseModel):
+    """Request model for analyzing an image with a custom prompt"""
+    image_path: Optional[str] = Field(
+        None,
+        description="Path to the image file on Azure Blob Storage. Supports a full URL with or without a SAS token."
+    )
+    base64_image: Optional[str] = Field(
+        None,
+        description="Base64-encoded image data to analyze directly. Must not include the 'data:image/...' prefix."
+    )
+    custom_prompt: str = Field(
+        ...,
+        description="Custom instructions for analyzing the image. This will guide what aspects the AI should focus on."
+    )
+
+    @validator('image_path', 'base64_image')
+    def validate_at_least_one_source(cls, v, values):
+        # If we're validating base64_image and image_path was empty, base64_image must not be None
+        # Or if we're validating image_path and base64_image is not in values, image_path must not be None
+        if 'image_path' in values and values['image_path'] is None and v is None:
+            raise ValueError(
+                "Either image_path or base64_image must be provided")
+        return v
+
+
 class ImageAnalyzeResponse(BaseModel):
     """Response model for image analysis results"""
     description: str = Field(..., description="Description of the content")

@@ -1502,6 +1502,103 @@ export async function editImage(
 }
 
 /**
+ * Analyze an image using a custom prompt
+ */
+export async function analyzeImageCustom(
+  imageUrl?: string,
+  base64Image?: string, 
+  customPrompt?: string,
+  retries = 3
+): Promise<ImageAnalysisResponse> {
+  const url = `${API_BASE_URL}/images/analyze-custom`;
+  
+  if (!customPrompt || !customPrompt.trim()) {
+    throw new Error("Custom prompt is required for custom analysis");
+  }
+  
+  if (DEBUG) {
+    console.log("Analyzing image with custom prompt:", customPrompt.substring(0, 100) + "...");
+    console.log(`POST ${url}`);
+  }
+  
+  let attempt = 0;
+  let lastError: Error | null = null;
+  
+  while (attempt < retries) {
+    try {
+      attempt++;
+      
+      if (attempt > 1) {
+        console.log(`Retry attempt ${attempt}/${retries} for custom image analysis`);
+      }
+      
+      // Add a timeout to prevent hanging requests
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 60000); // 60 second timeout
+      
+      const requestBody: any = {
+        custom_prompt: customPrompt
+      };
+      
+      if (imageUrl) {
+        requestBody.image_path = imageUrl;
+      } else if (base64Image) {
+        // Make sure the base64 string doesn't include the data URL prefix
+        const cleanBase64 = base64Image.replace(/^data:image\/[a-z]+;base64,/, "");
+        requestBody.base64_image = cleanBase64;
+      } else {
+        throw new Error("Either imageUrl or base64Image must be provided");
+      }
+      
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(requestBody),
+        signal: controller.signal
+      });
+      
+      // Clear the timeout
+      clearTimeout(timeoutId);
+      
+      if (DEBUG) {
+        console.log(`Response status: ${response.status} ${response.statusText}`);
+        if (!response.ok) {
+          console.error('Error response:', await response.text().catch(() => 'Could not read response text'));
+        }
+      }
+      
+      if (!response.ok) {
+        throw new Error(`Failed to analyze image: ${response.status} ${response.statusText}`);
+      }
+      
+      const data = await response.json();
+      
+      if (DEBUG) {
+        console.log('Custom analysis response data:', data);
+      }
+      
+      return data;
+    } catch (error) {
+      console.error(`Custom image analysis attempt ${attempt}/${retries} failed:`, error);
+      lastError = error instanceof Error ? error : new Error(String(error));
+      
+      // If it's the last attempt, throw the error
+      if (attempt >= retries) {
+        throw lastError;
+      }
+      
+      // Wait before retrying - increasing delay between retries
+      await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+    }
+  }
+  
+  // This should never happen due to the throw in the loop, but TypeScript requires a return
+  throw lastError || new Error("Custom image analysis failed after retries");
+}
+
+/**
  * Analyze an image using AI directly from base64 data
  */
 export async function analyzeImageFromBase64(base64Image: string, retries = 3): Promise<ImageAnalysisResponse> {

@@ -7,11 +7,13 @@ export type BrandsProtectionMode = 'off' | 'neutralize' | 'replace';
 interface ImageSettings {
   brandsProtection: BrandsProtectionMode;
   brandsList: string[];
+  customAnalysisPrompt: string;
 }
 
 const defaultImageSettings: ImageSettings = {
   brandsProtection: 'off',
   brandsList: [],
+  customAnalysisPrompt: "Analyze this image for marketing effectiveness, visual appeal, and target audience. Focus on composition, colors, and overall impact.",
 };
 
 interface ImageSettingsContextType {
@@ -20,6 +22,7 @@ interface ImageSettingsContextType {
   addBrand: (brand: string) => void;
   removeBrand: (brand: string) => void;
   clearBrands: () => void;
+  updateCustomAnalysisPrompt: (prompt: string) => void;
 }
 
 const ImageSettingsContext = createContext<ImageSettingsContextType | null>(null);
@@ -88,6 +91,13 @@ export function ImageSettingsProvider({ children }: { children: ReactNode }) {
     }));
   };
 
+  const updateCustomAnalysisPrompt = (prompt: string) => {
+    setSettings(prev => ({
+      ...prev,
+      customAnalysisPrompt: prompt
+    }));
+  };
+
   return (
     <ImageSettingsContext.Provider 
       value={{ 
@@ -95,7 +105,8 @@ export function ImageSettingsProvider({ children }: { children: ReactNode }) {
         updateSettings,
         addBrand,
         removeBrand,
-        clearBrands
+        clearBrands,
+        updateCustomAnalysisPrompt
       }}
     >
       {children}
