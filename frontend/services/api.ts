@@ -34,7 +34,7 @@ console.log(`- NEXT_PUBLIC_API_HOSTNAME: ${process.env.NEXT_PUBLIC_API_HOSTNAME 
 console.log(`- NEXT_PUBLIC_API_PORT: ${process.env.NEXT_PUBLIC_API_PORT || 'not set'}`);
 
 // Enable debug mode to log API requests
-const DEBUG = process.env.NEXT_PUBLIC_DEBUG_MODE === 'true' || true;
+const DEBUG = process.env.NEXT_PUBLIC_DEBUG_MODE === 'true';
 
 // Types for API requests and responses
 export interface VideoGenerationRequest {
