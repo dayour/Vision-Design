@@ -44,6 +44,11 @@ export interface VideoGenerationRequest {
   height: number;
   width: number;
   metadata?: Record<string, string>;
+  // NEW: Optional source images for image+text to video
+  sourceImages?: File[];
+  // Optional direct fields for form usage
+  folder_path?: string;
+  analyze_video?: boolean;
 }
 
 export interface VideoGenerationJob {
@@ -210,18 +215,38 @@ export async function createVideoGenerationJob(request: VideoGenerationRequest):
     console.log('Request:', request);
   }
 
-  // Include metadata if present
-  const requestBody = {
-    ...request,
-    metadata: request.metadata || undefined
-  };
-  
+  // Always use multipart form data to match backend's Form/File signature
+  const formData = new FormData();
+  formData.append('prompt', request.prompt);
+  formData.append('n_variants', String(request.n_variants));
+  formData.append('n_seconds', String(request.n_seconds));
+  formData.append('height', String(request.height));
+  formData.append('width', String(request.width));
+
+  // Derive folder_path from either explicit field or metadata.folder
+  const folderPath = request.folder_path || request.metadata?.folder;
+  if (folderPath) {
+    formData.append('folder_path', folderPath);
+  }
+
+  // Derive analyze_video from explicit field or metadata.analyzeVideo
+  const analyze = typeof request.analyze_video === 'boolean'
+    ? request.analyze_video
+    : (typeof request.metadata?.analyzeVideo === 'string' ? request.metadata?.analyzeVideo === 'true' : undefined);
+  if (typeof analyze === 'boolean') {
+    formData.append('analyze_video', String(analyze));
+  }
+
+  // Append images if provided
+  if (request.sourceImages && request.sourceImages.length > 0) {
+    for (const file of request.sourceImages) {
+      formData.append('images', file, file.name);
+    }
+  }
+
   const response = await fetch(url, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(requestBody),
+    body: formData,
   });
 
   if (DEBUG) {

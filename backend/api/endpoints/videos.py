@@ -84,7 +84,21 @@ router = APIRouter()
 
 
 @router.post("/jobs", response_model=VideoGenerationJobResponse)
-def create_video_generation_job(req: VideoGenerationRequest):
+async def create_video_generation_job(
+    prompt: str = Form(...),
+    n_variants: int = Form(1),
+    n_seconds: int = Form(10),
+    height: int = Form(1080),
+    width: int = Form(1920),
+    folder_path: str = Form(""),
+    analyze_video: bool = Form(False),
+    # NEW: Optional image files
+    images: Optional[List[UploadFile]] = File(None)
+):
+    """
+    Enhanced to support both text-only and image+text video generation.
+    Follows exact same workflow as existing video generation.
+    """
     try:
         # Ensure Sora client is available
         if sora_client is None:
@@ -93,15 +107,62 @@ def create_video_generation_job(req: VideoGenerationRequest):
                 detail="Video generation service is currently unavailable. Please check your environment configuration.",
             )
 
-        job = sora_client.create_video_generation_job(
-            prompt=req.prompt,
-            n_seconds=req.n_seconds,
-            height=req.height,
-            width=req.width,
-            n_variants=req.n_variants,
-        )
-        return VideoGenerationJobResponse(**job)
+        # Process images if provided
+        processed_images = []
+        image_filenames = []
+        
+        if images:
+            for idx, image_file in enumerate(images):
+                # Read image content
+                image_content = await image_file.read()
+
+                # Validate file size (25MB limit)
+                if len(image_content) > 25 * 1024 * 1024:
+                    raise HTTPException(400, f"Image {idx+1} exceeds 25MB limit")
+
+                # Validate file type
+                if not image_file.content_type or not image_file.content_type.startswith('image/'):
+                    raise HTTPException(400, f"File {idx+1} is not a valid image")
+
+                processed_images.append(image_content)
+                image_filenames.append(image_file.filename or f"image_{idx+1}.jpg")
+        
+        # Create job using appropriate method
+        if processed_images:
+            # Use image+text method
+            job = sora_client.create_video_generation_job_with_images(
+                prompt=prompt,
+                images=processed_images,
+                image_filenames=image_filenames,
+                n_seconds=n_seconds,
+                height=height,
+                width=width,
+                n_variants=n_variants
+            )
+        else:
+            # Use existing text-only method
+            job = sora_client.create_video_generation_job(
+                prompt=prompt,
+                n_seconds=n_seconds,
+                height=height,
+                width=width,
+                n_variants=n_variants
+            )
+        
+        # Create response with enhanced metadata
+        response_data = {
+            **job,
+            # Add metadata about images
+            "has_source_images": bool(processed_images),
+            "image_count": len(processed_images) if processed_images else 0,
+            "folder_path": folder_path,
+            "analyze_video": analyze_video
+        }
+        
+        return VideoGenerationJobResponse(**response_data)
+        
     except Exception as e:
+        logger.error(f"Error creating video job: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

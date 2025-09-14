@@ -68,6 +68,8 @@ export interface VideoSettings {
   brandsList?: string[]; // Add list of brands to protect
   folder?: string; // Add folder information
   analyzeVideo?: boolean; // Add video analysis setting
+  // NEW: Optional source images for Image+Text to Video
+  sourceImages?: File[];
 }
 
 interface VideoQueueContextType {
@@ -348,7 +350,8 @@ export function VideoQueueProvider({ children }: { children: React.ReactNode }) 
         }
         
         // Check if we should use the unified endpoint with analysis
-        if (settings.analyzeVideo) {
+        // IMPORTANT: Skip unified endpoint when sourceImages are provided (multipart not supported there)
+        if (settings.analyzeVideo && (!settings.sourceImages || settings.sourceImages.length === 0)) {
           // Use the unified endpoint that handles generation + analysis atomically
           const unifiedRequest: VideoGenerationWithAnalysisRequest = {
             ...apiRequest,
@@ -388,7 +391,11 @@ export function VideoQueueProvider({ children }: { children: React.ReactNode }) 
             // Fall back to the traditional approach
             const job = await createVideoGenerationJob({
               ...apiRequest,
-              metadata: jobMetadata
+              metadata: jobMetadata,
+              // Pass images and analyze/folder form fields for compatibility
+              sourceImages: settings.sourceImages,
+              folder_path: settings.folder,
+              analyze_video: settings.analyzeVideo,
             });
             
             // Update the queue item with the real job ID and data
@@ -406,7 +413,11 @@ export function VideoQueueProvider({ children }: { children: React.ReactNode }) 
           // Use traditional endpoint for non-analysis jobs
           const job = await createVideoGenerationJob({
             ...apiRequest,
-            metadata: jobMetadata
+            metadata: jobMetadata,
+            // Pass images and analyze/folder form fields for compatibility
+            sourceImages: settings.sourceImages,
+            folder_path: settings.folder,
+            analyze_video: settings.analyzeVideo,
           });
           
           // Update the queue item with the real job ID and data

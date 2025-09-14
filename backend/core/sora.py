@@ -1,6 +1,9 @@
 import requests
 import os
 import logging
+import json
+import io
+from typing import List
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -37,6 +40,87 @@ class Sora:
         response = requests.post(url, json=payload, headers=self.headers)
         response.raise_for_status()
         return response.json()
+
+    def create_video_generation_job_with_images(self, prompt, images, image_filenames, n_seconds, height, width, n_variants=1):
+        """Create video generation job with image inpainting using multipart upload.
+        First attempts without explicit crop bounds to let API defaults apply.
+        If the API rejects the request, retries once including full-image crop bounds.
+        """
+        url = f"{self.base_url}/generations/jobs?api-version={self.api_version}"
+        
+        def build_files():
+            return [("files", (filename, io.BytesIO(image_content), "image/jpeg"))
+                    for image_content, filename in zip(images, image_filenames)]
+
+        # Remove Content-Type from headers for multipart request
+        multipart_headers = {k: v for k, v in self.headers.items() if k.lower() != "content-type"}
+
+        # Common form fields
+        base_data = {
+            "prompt": prompt,
+            "height": str(height),
+            "width": str(width),
+            "n_seconds": str(n_seconds),
+            "n_variants": str(n_variants),
+            "model": self.deployment_name,
+        }
+
+        # Attempt 1: Without crop_bounds to rely on API defaults
+        data_no_crop = {
+            **base_data,
+            "inpaint_items": json.dumps([
+                {
+                    "frame_index": 0,
+                    "type": "image",
+                    "file_name": filename,
+                } for filename in image_filenames
+            ])
+        }
+
+        logger.info(f"Creating video job (no crop bounds) with {len(images)} images and prompt: {prompt[:50]}...")
+        response = requests.post(
+            url,
+            headers=multipart_headers,
+            data=data_no_crop,
+            files=build_files()
+        )
+
+        if response.ok:
+            return response.json()
+
+        # Log and retry once with full-image crop bounds if the first attempt failed
+        logger.warning(
+            f"SORA API rejected request without crop bounds: {response.status_code} {response.text}. Retrying with crop bounds.")
+
+        data_with_crop = {
+            **base_data,
+            "inpaint_items": json.dumps([
+                {
+                    "frame_index": 0,
+                    "type": "image",
+                    "file_name": filename,
+                    "crop_bounds": {
+                        "left_fraction": 0.0,
+                        "top_fraction": 0.0,
+                        "right_fraction": 1.0,
+                        "bottom_fraction": 1.0,
+                    },
+                } for filename in image_filenames
+            ])
+        }
+
+        response2 = requests.post(
+            url,
+            headers=multipart_headers,
+            data=data_with_crop,
+            files=build_files()
+        )
+
+        if not response2.ok:
+            logger.error(f"SORA API error (with crop bounds): {response2.status_code} {response2.text}")
+            response2.raise_for_status()
+
+        return response2.json()
 
     def get_video_generation_job(self, job_id):
         url = f"{self.base_url}/generations/jobs/{job_id}?api-version={self.api_version}"
