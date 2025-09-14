@@ -1,6 +1,7 @@
 import os
 import uuid
 import logging
+import threading
 from typing import Dict, BinaryIO, Optional, Union, List, Tuple
 from fastapi import UploadFile
 from azure.storage.blob import BlobServiceClient, ContentSettings
@@ -14,6 +15,10 @@ logger = logging.getLogger(__name__)
 
 class AzureBlobStorageService:
     """Service for handling Azure Blob Storage operations"""
+    
+    # Class-level variables for CORS caching
+    _cors_configured = False
+    _cors_lock = threading.Lock()
 
     def __init__(self):
         """Initialize Azure Blob Storage client"""
@@ -41,36 +46,42 @@ class AzureBlobStorageService:
         self._ensure_container_exists(self.image_container)
         self._ensure_container_exists(self.video_container)
 
-        # Configure CORS for direct access from frontend
-        self._configure_cors()
+        # Configure CORS for direct access from frontend (only once per application lifecycle)
+        with self._cors_lock:
+            if not AzureBlobStorageService._cors_configured:
+                self._configure_cors()
+                AzureBlobStorageService._cors_configured = True
 
     def _configure_cors(self) -> None:
         """
         Configure CORS settings on the Azure Storage account to allow direct access
-        from frontend domains
+        from frontend domains using environment-based configuration
         """
         try:
             from azure.storage.blob import CorsRule
 
+            # Parse origins from environment configuration
+            origins_str = settings.CORS_ALLOWED_ORIGINS.strip()
+            if origins_str == "*":
+                allowed_origins = ["*"]
+            else:
+                # Split by comma and clean up
+                allowed_origins = [origin.strip() for origin in origins_str.split(",") if origin.strip()]
+
+            logger.info(f"Configuring CORS with origins: {allowed_origins}")
+
             # First, clear any existing CORS rules to avoid conflicts
             try:
-                print("Clearing existing CORS rules...")
+                logger.info("Clearing existing CORS rules...")
                 self.blob_service_client.set_service_properties(cors=[])
-                print("Existing CORS rules cleared successfully")
+                logger.info("Existing CORS rules cleared successfully")
             except Exception as clear_error:
-                print(
-                    f"Warning: Could not clear existing CORS rules: {clear_error}")
+                logger.warning(f"Could not clear existing CORS rules: {clear_error}")
 
-            # Define CORS rules with individual origins (not comma-separated)
+            # Define CORS rules with environment-based origins
             cors_rules = [
                 CorsRule(
-                    allowed_origins=[
-                        "http://localhost:3000",  # Local development
-                        "https://localhost:3000",  # Local development with HTTPS
-                        "http://127.0.0.1:3000",  # Alternative local development
-                        "https://127.0.0.1:3000",  # Alternative local development with HTTPS
-                        "*"  # Allow all origins for now - should be restricted in production
-                    ],
+                    allowed_origins=allowed_origins,
                     allowed_methods=[
                         "GET",
                         "HEAD",
@@ -86,21 +97,17 @@ class AzureBlobStorageService:
                 )
             ]
 
-            print(
-                f"Setting CORS rules with {len(cors_rules[0].allowed_origins)} origins...")
-            print(f"Origins: {cors_rules[0].allowed_origins}")
+            logger.info(f"Setting CORS rules with {len(allowed_origins)} origins...")
 
             # Set CORS rules
             self.blob_service_client.set_service_properties(cors=cors_rules)
 
-            print("Successfully configured CORS for Azure Blob Storage")
+            logger.info("Successfully configured CORS for Azure Blob Storage")
 
         except Exception as e:
-            print(
-                f"Warning: Could not configure CORS for Azure Blob Storage: {e}")
-            # Print more details for debugging
-            import traceback
-            print(f"Full error traceback: {traceback.format_exc()}")
+            logger.warning(f"Could not configure CORS for Azure Blob Storage: {e}")
+            # Print detailed error only once for debugging
+            logger.debug(f"CORS configuration error details: {e}")
             # Don't fail if CORS configuration fails, as it might be due to permissions
 
     def list_blobs(self, container_name: str, prefix: Optional[str] = None,
@@ -253,8 +260,10 @@ class AzureBlobStorageService:
 
     def _preprocess_metadata_value(self, value: str) -> str:
         """
-        Preprocess metadata value to comply with Azure Blob Storage requirements.
-        Azure requires metadata keys and values to contain only US-ASCII characters.
+        DEPRECATED: Preprocess metadata value to comply with Azure Blob Storage requirements.
+
+        This function is no longer used since we store all metadata in Cosmos DB.
+        Kept for backwards compatibility only.
 
         Args:
             value: Metadata value to preprocess
@@ -311,10 +320,12 @@ class AzureBlobStorageService:
         """
         Upload an asset (image or video) to Azure Blob Storage
 
+        Note: Metadata is no longer stored in blob storage - use Cosmos DB instead
+
         Args:
             file: The uploaded file
             asset_type: Type of asset ("image" or "video")
-            metadata: Optional metadata as key-value pairs
+            metadata: Optional metadata (ignored - kept for API compatibility)
             folder_path: Optional folder path to store the asset in
 
         Returns:
@@ -363,36 +374,19 @@ class AzureBlobStorageService:
             # Set content settings
             content_settings = ContentSettings(content_type=content_type)
 
-            # Prepare metadata (all values must be strings)
-            upload_metadata = {}
-            if metadata:
-                # Process each metadata value to make it Azure-compatible
-                for k, v in metadata.items():
-                    # Skip None values
-                    if v is None:
-                        continue
-
-                    # Process the value to make it Azure-compatible
-                    processed_value = self._preprocess_metadata_value(v)
-                    upload_metadata[k] = processed_value
-
-            # Add folder path to metadata if it exists
-            if normalized_folder_path:
-                upload_metadata["folder_path"] = normalized_folder_path
-
-            # Upload the file
+            # Upload the file (no metadata stored in blob storage)
             file_content = await file.read()
 
-            # For images, add width and height to metadata if not already present
-            if asset_type == "image" and "width" not in upload_metadata:
+            # Get image dimensions for return data (but don't store in blob metadata)
+            width, height = None, None
+            if asset_type == "image":
                 try:
                     from PIL import Image
                     import io
 
                     # Get image dimensions using PIL
                     with Image.open(io.BytesIO(file_content)) as img:
-                        upload_metadata["width"] = str(img.width)
-                        upload_metadata["height"] = str(img.height)
+                        width, height = img.width, img.height
                 except Exception as e:
                     # If we can't get dimensions, log but continue
                     logger.warning(f"Could not get image dimensions: {str(e)}")
@@ -400,14 +394,14 @@ class AzureBlobStorageService:
             blob_client.upload_blob(
                 data=file_content,
                 content_settings=content_settings,
-                metadata=upload_metadata,
                 overwrite=True
             )
 
             # Get the blob URL
             blob_url = blob_client.url
 
-            return {
+            # Prepare return data with extracted technical metadata
+            return_data = {
                 "file_id": file_id,
                 "blob_name": blob_name,
                 "container": container_name,
@@ -415,15 +409,24 @@ class AzureBlobStorageService:
                 "size": len(file_content),
                 "content_type": content_type,
                 "original_filename": file.filename,
-                "metadata": upload_metadata,
                 "folder_path": normalized_folder_path
             }
+
+            # Add dimensions if we extracted them
+            if width is not None and height is not None:
+                return_data["width"] = width
+                return_data["height"] = height
+
+            return return_data
         except Exception as e:
             raise
 
     def get_asset_metadata(self, blob_name: str, container_name: str) -> Optional[Dict[str, str]]:
         """
-        Get metadata for an asset
+        DEPRECATED: Get metadata for an asset from blob storage
+
+        This function is deprecated since we now store all metadata in Cosmos DB.
+        Use CosmosDBService.get_asset_metadata() instead.
 
         Args:
             blob_name: Name of the blob
@@ -446,7 +449,10 @@ class AzureBlobStorageService:
 
     def update_asset_metadata(self, blob_name: str, container_name: str, metadata: Dict[str, str]) -> bool:
         """
-        Update metadata for an existing blob
+        DEPRECATED: Update metadata for an existing blob
+
+        This function is deprecated since we now store all metadata in Cosmos DB.
+        Use CosmosDBService.update_asset_metadata() instead.
 
         Args:
             blob_name: Name of the blob

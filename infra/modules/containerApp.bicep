@@ -32,6 +32,12 @@ param targetPort int = 80
 param API_PROTOCOL string = 'http'
 param API_HOSTNAME string = 'localhost'
 param API_PORT string = '80'
+// Add these parameters to your containerApp.bicep file
+param COSMOS_ENDPOINT string = ''
+param COSMOS_DATABASE_NAME string = ''
+param COSMOS_CONTAINER_NAME string = ''
+// @secure()
+// param COSMOS_DB_KEY string = '' // Removed for managed identity
 
 // Azure Container Registry parameters
 param AZURE_CONTAINER_REGISTRY_ENDPOINT string = ''
@@ -40,18 +46,28 @@ param AZURE_CONTAINER_REGISTRY_USERNAME string = ''
 @secure()
 param AZURE_CONTAINER_REGISTRY_PASSWORD string = ''
 
-resource containerApp 'Microsoft.App/containerApps@2022-03-01' = if(deployNew) {
+resource containerApp 'Microsoft.App/containerApps@2024-03-01' = if(deployNew) {
   name: containerAppName
   location: location
   tags: azdServiceName != '' ? {
     'azd-service-name': azdServiceName
   } : {}
+  identity: {
+    type: 'SystemAssigned'
+  }
   properties: {
     managedEnvironmentId: containerAppEnvId
     configuration: {
       ingress: {
         external: true
         targetPort: targetPort
+        transport: 'Auto'
+        traffic: [
+          {
+            weight: 100
+            latestRevision: true
+          }
+        ]
       }
       registries: AZURE_CONTAINER_REGISTRY_ENDPOINT != '' ? [
         {
@@ -76,6 +92,18 @@ resource containerApp 'Microsoft.App/containerApps@2022-03-01' = if(deployNew) {
             cpu: 1
             memory: '2Gi'
           }
+          probes: [
+            {
+              type: 'Readiness'
+              httpGet: {
+                path: '/'
+                port: targetPort
+                scheme: 'HTTP'
+              }
+              initialDelaySeconds: 10
+              periodSeconds: 10
+            }
+          ]
           env: [
             {
               name: 'MODEL_PROVIDER'
@@ -162,15 +190,36 @@ resource containerApp 'Microsoft.App/containerApps@2022-03-01' = if(deployNew) {
               value: AZURE_STORAGE_ACCOUNT_NAME
             }
             {
+              name: 'AZURE_COSMOS_DB_ENDPOINT'
+              value: COSMOS_ENDPOINT
+            }
+            {
+              name: 'AZURE_COSMOS_DB_ID'
+              value: COSMOS_DATABASE_NAME
+            }
+            {
+              name: 'AZURE_COSMOS_CONTAINER_ID'
+              value: COSMOS_CONTAINER_NAME
+            }
+            {
+              name: 'USE_MANAGED_IDENTITY'
+              value: 'true'
+            }
+            {
               name: 'AZURE_CONTAINER_REGISTRY_ENDPOINT'
               value: AZURE_CONTAINER_REGISTRY_ENDPOINT
             }
           ]
         }
       ]
+      // Keep at least one replica running to avoid scale-to-zero
+      scale: {
+        minReplicas: 1
+      }
     }
   }
 }
 
 output containerAppId string = containerApp.id
 output containerAppFqdn string = containerApp.properties.configuration.ingress.fqdn
+output containerAppPrincipalId string = deployNew ? containerApp.identity.principalId : ''

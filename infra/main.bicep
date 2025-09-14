@@ -55,8 +55,6 @@ param SORA_AOAI_API_KEY string
 // Model types (internal use)
 param llmModelType string = 'gpt-4o'
 param imageGenModelType string = 'gpt-image-1'
-
-
 // Parameters for the Docker images for the backend and frontend container apps
 param DOCKER_IMAGE_BACKEND string = 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
 param DOCKER_IMAGE_FRONTEND string = 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
@@ -66,7 +64,14 @@ param API_PORT string = ''
 
 // Environment name for azd
 param environmentName string = ''
-param principalId string = ''
+// param principalId string = '' // Unused parameter removed
+
+// Parameters for Cosmos DB
+param cosmosAccountName string = 'visionary-lab-cosmos'
+param cosmosDatabaseName string = 'VisionaryLabDB'
+param cosmosContainerName string = 'visionarylab'
+
+// No Virtual Network or Private Endpoints in public-only mode
 
 // Azure Storage Account
 module storageAccountMod './modules/storageAccount.bicep' = {
@@ -75,9 +80,10 @@ module storageAccountMod './modules/storageAccount.bicep' = {
     location: location
     storageAccountName: storageAccountName
     // keyVaultName: keyVaultMod.outputs.keyVaultName
-    deployNew: true  // set false to reuse an existing storage account
+    deployNew: true // set false to reuse an existing storage account
   }
 }
+
 
 // Azure Storage Account Container
 // This module creates a container in the storage account for storing images
@@ -86,7 +92,7 @@ module storageContainerMod './modules/storageAccountContainer.bicep' = {
   params: {
     storageAccountName: storageAccountName
     containerName: 'images'
-    deployNew: true  // set false to reuse an existing container
+    deployNew: true // set false to reuse an existing container
   }
   dependsOn: [
     storageAccountMod
@@ -104,6 +110,27 @@ module containerRegistryMod './modules/containerRegistry.bicep' = {
   }
 }
 
+// Add this module after your storage modules
+// Azure Cosmos DB Account for Visionary Lab
+// This module creates a Cosmos DB account with SQL API for storing Visionary Lab data
+// Generate a short, stable prefix per environment to avoid name collisions across deployments
+var cosmosPrefix = toLower(substring(uniqueString(resourceGroup().id, environmentName), 0, 5))
+var cosmosAccountNamePrefixed = '${cosmosPrefix}-${cosmosAccountName}'
+module cosmosDbMod './modules/cosmosDb.bicep' = {
+  name: 'cosmosDbMod'
+  params: {
+    location: location
+    cosmosAccountName: cosmosAccountNamePrefixed
+    databaseName: cosmosDatabaseName
+    containerName: cosmosContainerName
+    subnetId: '' // Private Endpoint is used; VNet rules not required
+    deployNew: true
+    publicNetworkAccess: 'Enabled'
+  }
+}
+
+// No Private DNS or Private Endpoints in public-only mode
+
 // OpenAI deployment module for LLM
 // This module creates an OpenAI deployment for the LLM model
 module llmOpenAiAccount './modules/openAiDeployment.bicep' = {
@@ -114,7 +141,7 @@ module llmOpenAiAccount './modules/openAiDeployment.bicep' = {
     ModelType: llmModelType
     ModelVersion: '2024-11-20'
     location: location
-    deployNew: false  // set false to reuse an existing deployment
+    deployNew: false // set false to reuse an existing deployment
   }
   dependsOn: [
     // keyVaultMod
@@ -132,7 +159,7 @@ module imageGenOpenAiAccount './modules/openAiDeployment.bicep' = {
     ModelType: imageGenModelType
     ModelVersion: '2024-11-20'
     location: location
-    deployNew: false  // set false to reuse an existing deployment
+    deployNew: false // set false to reuse an existing deployment
   }
   dependsOn: [
     storageAccountMod
@@ -149,7 +176,8 @@ module containerAppEnvMod './modules/containerAppEnv.bicep' = {
     location: location
     containerAppEnvName: containerAppEnvName
     logAnalyticsWorkspaceName: logAnalyticsWorkspaceName
-    deployNew: true  // set false to reuse an existing environment
+    subnetId: ''
+    deployNew: true // set false to reuse an existing environment
   }
 }
 
@@ -164,7 +192,7 @@ module containerAppBackend './modules/containerApp.bicep' = {
     containerAppName: containerAppNameBackend
     containerAppEnvId: containerAppEnvMod.outputs.containerAppEnvId
     targetPort: 80
-    deployNew: true  // set false to reuse an existing container app
+    deployNew: true // set false to reuse an existing container app
     AZURE_BLOB_SERVICE_URL: storageAccountMod.outputs.storageAccountPrimaryEndpoint
     AZURE_STORAGE_ACCOUNT_KEY: storageAccountMod.outputs.storageAccountKey
     AZURE_STORAGE_ACCOUNT_NAME: storageAccountName
@@ -182,12 +210,13 @@ module containerAppBackend './modules/containerApp.bicep' = {
     SORA_AOAI_RESOURCE: SORA_AOAI_RESOURCE
     SORA_DEPLOYMENT: SORA_DEPLOYMENT
     SORA_AOAI_API_KEY: SORA_AOAI_API_KEY
+    COSMOS_ENDPOINT: cosmosDbMod.outputs.cosmosAccountEndpoint
+    COSMOS_DATABASE_NAME: cosmosDbMod.outputs.databaseName
+    COSMOS_CONTAINER_NAME: cosmosDbMod.outputs.containerName
     azdServiceName: 'backend'
   }
   dependsOn: [
-    storageAccountMod
-    storageContainerMod
-    containerRegistryMod
+    cosmosDbMod
   ]
 }
 
@@ -202,7 +231,7 @@ module containerAppFrontend './modules/containerApp.bicep' = {
     containerAppName: containerAppNameFrontend
     containerAppEnvId: containerAppEnvMod.outputs.containerAppEnvId
     targetPort: 3000
-    deployNew: true  // set false to reuse an existing container app
+    deployNew: true // set false to reuse an existing container app
     AZURE_BLOB_SERVICE_URL: storageAccountMod.outputs.storageAccountPrimaryEndpoint
     AZURE_STORAGE_ACCOUNT_KEY: storageAccountMod.outputs.storageAccountKey
     AZURE_STORAGE_ACCOUNT_NAME: storageAccountName
@@ -219,13 +248,23 @@ module containerAppFrontend './modules/containerApp.bicep' = {
     LLM_AOAI_API_KEY: LLM_AOAI_API_KEY
     API_PROTOCOL: API_PROTOCOL == '' ? 'https' : API_PROTOCOL
     API_PORT: API_PORT == '' ? '443' : API_PORT
+    // Use the backend external FQDN (public Internet)
     API_HOSTNAME: API_HOSTNAME == '' ? '${containerAppNameBackend}.${containerAppEnvMod.outputs.containerAppDefaultDomain}' : API_HOSTNAME
     azdServiceName: 'frontend'
   }
+}
+
+// Role assignment module - deployed after both Container App and Cosmos DB exist
+module cosmosRoleAssignmentMod './modules/cosmosRoleAssignment.bicep' = {
+  name: 'cosmosRoleAssignmentMod'
+  params: {
+    cosmosAccountName: cosmosAccountNamePrefixed
+    containerAppPrincipalId: containerAppBackend.outputs.containerAppPrincipalId
+    dataContributorRoleId: cosmosDbMod.outputs.dataContributorRoleId
+  }
   dependsOn: [
-    storageAccountMod
-    storageContainerMod
-    containerRegistryMod
+    containerAppBackend
+    cosmosDbMod
   ]
 }
 
@@ -234,6 +273,14 @@ output AZURE_LOCATION string = location
 output AZURE_CONTAINER_ENVIRONMENT_NAME string = containerAppEnvMod.outputs.containerAppEnvId
 output AZURE_CONTAINER_REGISTRY_ENDPOINT string = containerRegistryMod.outputs.containerRegistryLoginServer
 output BACKEND_URI string = 'https://${containerAppBackend.outputs.containerAppFqdn}'
+// Internal URI not used in public-only mode; mirror external for compatibility
+output BACKEND_INTERNAL_URI string = 'https://${containerAppBackend.outputs.containerAppFqdn}'
 output FRONTEND_URI string = 'https://${containerAppFrontend.outputs.containerAppFqdn}'
 output AZURE_STORAGE_ACCOUNT_NAME string = storageAccountName
 output AZURE_BLOB_SERVICE_URL string = storageAccountMod.outputs.storageAccountPrimaryEndpoint
+
+// Cosmos DB outputs
+output COSMOS_DB_ENDPOINT string = cosmosDbMod.outputs.cosmosAccountEndpoint
+output COSMOS_DB_DATABASE_NAME string = cosmosDbMod.outputs.databaseName
+output COSMOS_DB_CONTAINER_NAME string = cosmosDbMod.outputs.containerName
+// Intentionally do not output the Cosmos DB key; using Managed Identity + RBAC

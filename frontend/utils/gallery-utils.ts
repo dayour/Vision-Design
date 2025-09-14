@@ -26,37 +26,27 @@ export interface VideoMetadata {
  * Convert GalleryItem to VideoMetadata
  */
 async function mapGalleryItemToVideoMetadata(item: GalleryItem): Promise<VideoMetadata> {
-  // Extract title from metadata or name
-  const title = item.metadata?.title || item.name.split('.')[0].replace(/_/g, ' ');
+  // Extract title from prompt (preferred) or name
+  const title = item.metadata?.prompt || item.name.split('.')[0].replace(/_/g, ' ');
   
-  // Extract prompt from metadata - prioritize prompt over description
-  const description = item.metadata?.prompt || item.metadata?.description || '';
+  // Extract description from metadata
+  const description = item.metadata?.description || '';
   
   // Get direct URL with SAS token
   const src = await sasTokenService.getBlobUrl(item.name, item.media_type === MediaType.VIDEO);
   console.log(`Using direct blob URL for ${item.name}`);
   
-  // Extract analysis metadata if available
+  // Extract analysis metadata from CosmosDB nested structure
   let analysis: VideoMetadata['analysis'] = undefined;
-  if (item.metadata) {
-    const hasAnalysis = item.metadata.summary || item.metadata.products || item.metadata.tags || item.metadata.feedback;
-    if (hasAnalysis) {
-      analysis = {
-        summary: item.metadata.summary as string,
-        products: item.metadata.products as string,
-        feedback: item.metadata.feedback as string,
-        analyzed: item.metadata.analyzed === 'true' || item.metadata.analyzed === true,
-      };
-      
-      // Parse tags from metadata - they might be stored as comma-separated string
-      if (item.metadata.tags) {
-        if (typeof item.metadata.tags === 'string') {
-          analysis.tags = item.metadata.tags.split(',').map(tag => tag.trim()).filter(tag => tag.length > 0);
-        } else if (Array.isArray(item.metadata.tags)) {
-          analysis.tags = item.metadata.tags;
-        }
-      }
-    }
+  if (item.metadata?.analysis) {
+    const analysisData = item.metadata.analysis;
+    analysis = {
+      summary: analysisData.summary as string,
+      products: analysisData.products as string,
+      feedback: analysisData.feedback as string,
+      tags: Array.isArray(analysisData.tags) ? analysisData.tags : [],
+      analyzed: item.metadata.has_analysis === true,
+    };
   }
 
   return {
@@ -131,15 +121,34 @@ export async function fetchVideos(
  */
 async function mapGalleryItemToImageMetadata(item: GalleryItem): Promise<ImageMetadata> {
   try {
-    // Extract title from metadata or name
-    const title = item.metadata?.title || item.name.split('.')[0].replace(/_/g, ' ');
+    // Extract title from prompt (preferred) or name
+    const title = item.metadata?.prompt || item.name.split('.')[0].replace(/_/g, ' ');
     
-    // Extract description from metadata
-    const description = item.metadata?.description || '';
+    // Extract description from CosmosDB metadata
+    const description = item.metadata?.analysis?.summary || item.metadata?.description || '';
     
     // Use direct SAS token URL (false for images, true for videos)
     const src = await sasTokenService.getBlobUrl(item.name, false);
     console.log(`Using direct blob URL for ${item.name}`);
+    
+    // Extract tags from CosmosDB analysis structure
+    let tags: string[] = [];
+    if (item.metadata?.analysis?.tags && Array.isArray(item.metadata.analysis.tags)) {
+      tags = item.metadata.analysis.tags;
+    }
+    
+    // Extract analysis results from CosmosDB nested structure
+    let analysis: ImageMetadata['analysis'] = undefined;
+    if (item.metadata?.analysis) {
+      const analysisData = item.metadata.analysis;
+      analysis = {
+        summary: analysisData.summary as string,
+        products: analysisData.products as string,
+        feedback: analysisData.feedback as string,
+        tags: Array.isArray(analysisData.tags) ? analysisData.tags : tags,
+        analyzed: item.metadata.has_analysis === true,
+      };
+    }
     
     return {
       id: item.id,
@@ -147,11 +156,12 @@ async function mapGalleryItemToImageMetadata(item: GalleryItem): Promise<ImageMe
       src,
       title: title.charAt(0).toUpperCase() + title.slice(1),
       description: description,
-      width: item.metadata?.width ? parseInt(item.metadata.width) : undefined,
-      height: item.metadata?.height ? parseInt(item.metadata.height) : undefined,
-      tags: [],
+      width: typeof item.metadata?.width === 'number' ? item.metadata.width : undefined,
+      height: typeof item.metadata?.height === 'number' ? item.metadata.height : undefined,
+      tags: tags,
       size: "medium" as const,
       originalItem: item,
+      analysis: analysis,
     };
   } catch (error) {
     console.error(`Error mapping gallery item ${item.id}:`, error);
@@ -173,6 +183,13 @@ export interface ImageMetadata {
   width?: number;
   height?: number;
   size: "small" | "medium" | "large";
+  analysis?: {
+    summary?: string;
+    products?: string;
+    feedback?: string;
+    tags?: string[];
+    analyzed?: boolean;
+  };
 }
 
 /**
