@@ -135,6 +135,8 @@ export function VideoOverlay({
   // NEW: Image-to-Video state (mirroring ImageOverlay)
   const [sourceImages, setSourceImages] = useState<File[]>([]);
   const [isClient, setIsClient] = useState(false);
+  // Derived: are we in image+text mode
+  const isImageToVideo = isClient && sourceImages.length > 0;
 
   // References
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -145,6 +147,13 @@ export function VideoOverlay({
   useEffect(() => {
     setIsClient(true);
   }, []);
+
+  // Force variants to 1 when images are attached
+  useEffect(() => {
+    if (sourceImages.length > 0 && variants !== "1") {
+      setVariants("1");
+    }
+  }, [sourceImages.length]);
 
   // Update folder when selectedFolder prop changes
   useEffect(() => {
@@ -360,13 +369,15 @@ export function VideoOverlay({
 
   const handleSubmit = () => {
     if (!prompt.trim()) return;
-    
+    // Enforce 1 variant when source images are present
+    const computedVariants = sourceImages.length > 0 ? "1" : variants;
+
     onGenerate({
       prompt,
       aspectRatio,
       resolution,
       duration,
-      variants,
+      variants: computedVariants,
       modality,
       analyzeVideo,
       brandsProtection,
@@ -740,7 +751,7 @@ export function VideoOverlay({
                             <Select
                               value={variants}
                               onValueChange={setVariants}
-                              disabled={isGenerating}
+                              disabled={isGenerating || isImageToVideo}
                             >
                               <SelectTrigger className="w-[150px] h-8">
                                 <div className="flex items-center">
@@ -749,16 +760,22 @@ export function VideoOverlay({
                                 </div>
                               </SelectTrigger>
                               <SelectContent>
-                                <SelectItem value="1">1 variation</SelectItem>
-                                <SelectItem value="2">2 variations</SelectItem>
-                                <SelectItem value="3">3 variations</SelectItem>
-                                <SelectItem value="4">4 variations</SelectItem>
-                                <SelectItem value="5">5 variations</SelectItem>
+                                {isImageToVideo ? (
+                                  <SelectItem value="1">1 variation</SelectItem>
+                                ) : (
+                                  <>
+                                    <SelectItem value="1">1 variation</SelectItem>
+                                    <SelectItem value="2">2 variations</SelectItem>
+                                    <SelectItem value="3">3 variations</SelectItem>
+                                    <SelectItem value="4">4 variations</SelectItem>
+                                    <SelectItem value="5">5 variations</SelectItem>
+                                  </>
+                                )}
                               </SelectContent>
                             </Select>
                           </TooltipTrigger>
                           <TooltipContent>
-                            <p>Variations: Number of different outputs to generate</p>
+                            <p>{isImageToVideo ? 'Variations limited to 1 when images are attached' : 'Variations: Number of different outputs to generate'}</p>
                           </TooltipContent>
                         </Tooltip>
                         
