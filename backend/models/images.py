@@ -186,6 +186,51 @@ class ImageSaveResponse(BaseResponse):
     )
 
 
+class ImageGenerateWithAnalysisRequest(BaseModel):
+    """Request model for generating, analyzing, and saving images in one call"""
+    # Generation parameters (mirrors ImageGenerationRequest)
+    prompt: str = Field(..., description="User prompt for image generation")
+    model: str = Field("gpt-image-1", description="Image generation model to use")
+    n: int = Field(1, description="Number of images to generate (1-10)")
+    size: str = Field(
+        "auto",
+        description="Output image dimensions. One of 1024x1024, 1536x1024, 1024x1536, or auto.",
+    )
+    response_format: str = Field(
+        "b64_json",
+        description="Response format for generated image(s). gpt-image-1 returns b64_json",
+    )
+    quality: Optional[str] = Field(
+        "auto", description="Quality setting: 'low', 'medium', 'high', 'auto'"
+    )
+    output_format: Optional[str] = Field(
+        "png", description="Output format: 'png', 'webp', 'jpeg'"
+    )
+    output_compression: Optional[int] = Field(
+        100,
+        description="Compression percentage for WEBP/JPEG (0-100). Only for webp/jpeg",
+    )
+    background: Optional[str] = Field(
+        "auto",
+        description="Background: 'transparent', 'opaque', 'auto'. Transparent needs png/webp",
+    )
+    moderation: Optional[str] = Field(
+        "auto", description="Moderation strictness: 'auto', 'low'"
+    )
+    user: Optional[str] = Field(
+        None, description="End-user identifier for abuse monitoring"
+    )
+
+    # Save/analysis parameters
+    save_all: bool = Field(True, description="Whether to save all variants or first only")
+    folder_path: Optional[str] = Field(
+        None, description="Folder path to save images (e.g., 'my-album' or 'a/b')"
+    )
+    analyze: bool = Field(
+        True, description="Whether to analyze images and store analysis results"
+    )
+
+
 class ImageListRequest(BaseModel):
     """Request model for listing images"""
     # TODO: Add filtering and sorting parameters

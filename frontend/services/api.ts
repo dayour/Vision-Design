@@ -1138,6 +1138,71 @@ export async function saveGeneratedImages(
 }
 
 /**
+ * Unified image generation + analysis + saving
+ */
+export async function generateImagesWithAnalysis(params: {
+  prompt: string;
+  n?: number;
+  size?: string;
+  quality?: string;
+  output_format?: string;
+  output_compression?: number;
+  background?: string;
+  moderation?: string;
+  user?: string;
+  save_all?: boolean;
+  folder_path?: string;
+  model?: string;
+  analyze?: boolean;
+}): Promise<ImageSaveResponse> {
+  const url = `${API_BASE_URL}/images/generate-with-analysis`;
+
+  const body = {
+    prompt: params.prompt,
+    model: params.model || 'gpt-image-1',
+    n: params.n ?? 1,
+    size: params.size || 'auto',
+    quality: params.quality || 'auto',
+    output_format: params.output_format || 'png',
+    output_compression: params.output_compression ?? 100,
+    background: params.background || 'auto',
+    moderation: params.moderation || 'auto',
+    user: params.user,
+    save_all: params.save_all ?? true,
+    folder_path: params.folder_path || '',
+    analyze: params.analyze ?? true,
+  };
+
+  if (DEBUG) {
+    console.log('Generating images with analysis (unified)');
+    console.log('POST', url);
+    console.log('Payload:', body);
+  }
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (DEBUG) {
+    console.log(`Response status: ${response.status} ${response.statusText}`);
+    if (!response.ok) {
+      console.error('Error response:', await response.text().catch(() => 'Could not read response text'));
+    }
+  }
+
+  if (!response.ok) {
+    throw new Error(`Failed to generate/analyze/save images: ${response.status} ${response.statusText}`);
+  }
+
+  const data = await response.json();
+  return data;
+}
+
+/**
  * Interface for image analysis response
  */
 export interface ImageAnalysisResponse {

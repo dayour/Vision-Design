@@ -35,6 +35,7 @@ from backend.models.images import (
     ImageSaveResponse,
     TokenUsage,
     InputTokensDetails,
+    ImageGenerateWithAnalysisRequest,
 )
 from backend.models.gallery import MediaType
 from backend.core import llm_client, dalle_client, image_sas_token
@@ -880,12 +881,74 @@ async def save_generated_images(
             analysis_results=analysis_results if analyzed else None,
             analyzed=analyzed,
         )
-
     except Exception as e:
         logger.error(f"Error saving generated images: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500, detail=f"Error saving generated images: {str(e)}"
         )
+
+@router.post("/generate-with-analysis", response_model=ImageSaveResponse)
+async def generate_image_with_analysis(
+    req: ImageGenerateWithAnalysisRequest,
+    azure_storage_service: AzureBlobStorageService = Depends(
+        lambda: AzureBlobStorageService()
+    ),
+    cosmos_service: Optional[CosmosDBService] = Depends(get_cosmos_service),
+):
+    """
+    Generate image(s), then save to storage and optionally analyze in one call.
+    Reuses existing generation and save logic to avoid duplication.
+    """
+    try:
+        # Build generation parameters (same as /images/generate)
+        params = {
+            "prompt": req.prompt,
+            "model": req.model,
+            "n": req.n,
+            "size": req.size,
+        }
+
+        if req.model == "gpt-image-1":
+            if req.quality:
+                params["quality"] = req.quality
+            params["background"] = req.background
+            if req.output_format and req.output_format != "png":
+                params["output_format"] = req.output_format
+            if req.output_format in ["webp", "jpeg"] and req.output_compression != 100:
+                params["output_compression"] = req.output_compression
+            if req.moderation and req.moderation != "auto":
+                params["moderation"] = req.moderation
+            if req.user:
+                params["user"] = req.user
+
+        # Generate images via model client
+        response = dalle_client.generate_image(**params)
+
+        # Construct generation response to feed into existing /save logic
+        gen_response = ImageGenerationResponse(
+            success=True,
+            message="Image(s) generated successfully",
+            imgen_model_response=response,
+            token_usage=None,
+        )
+
+        save_request = ImageSaveRequest(
+            generation_response=gen_response,
+            prompt=req.prompt,
+            model=req.model,
+            size=req.size,
+            background=req.background,
+            output_format=req.output_format,
+            save_all=req.save_all,
+            folder_path=req.folder_path,
+            analyze=req.analyze,
+        )
+
+        # Call existing save endpoint function directly with explicit deps
+        return await save_generated_images(save_request, azure_storage_service, cosmos_service)
+    except Exception as e:
+        logger.error(f"Error in /images/generate-with-analysis: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/list", response_model=ImageListResponse)

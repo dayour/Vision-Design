@@ -75,6 +75,7 @@ export async function saveGeneratedImage(
     output_format?: string;
     save_all?: boolean;
     folder_path?: string;
+    analyze?: boolean; // NEW: request backend analysis
   }
 ): Promise<ApiImageSaveResponse> {
   // Import the saveGeneratedImages function from api.ts
@@ -96,7 +97,8 @@ export async function saveGeneratedImage(
       options.output_format || 'png',
       options.model || 'gpt-image-1',
       options.background || 'auto',
-      options.size || '1024x1024'
+      options.size || '1024x1024',
+      options.analyze ?? true // default to true to match older behavior
     );
   } catch (error: unknown) {
     console.error('Error saving image:', error);

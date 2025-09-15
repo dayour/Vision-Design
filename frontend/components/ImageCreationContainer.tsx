@@ -11,7 +11,8 @@ import {
   MediaType, 
   fetchFolders, 
   editImage,
-  protectImagePrompt 
+  protectImagePrompt,
+  generateImagesWithAnalysis,
 } from "@/services/api";
 
 interface ImageCreationContainerProps {
@@ -191,27 +192,58 @@ export function ImageCreationContainer({ className = "", onImagesSaved }: ImageC
           description: `Successfully edited ${newSettings.variations} image${newSettings.variations > 1 ? 's' : ''}`
         });
       } else {
-        // Show single consolidated toast for image generation
-        const generatingToast = toast.loading("Generating images...", {
-          description: `Creating ${newSettings.variations} image${newSettings.variations > 1 ? 's' : ''} with your prompt${brandProtectionApplied ? ' (brand protection applied)' : ''}`,
-        });
-        
-        // Call the image generation API with the protected prompt
-        response = await generateImages(
-          generationPrompt, // Use protected prompt for generation
-          newSettings.variations, // Number of variations from dropdown
-          newSettings.imageSize, // Use selected size
-          "b64_json", // Fixed response format for now
-          newSettings.background, // Background option
-          newSettings.outputFormat, // Output format
-          newSettings.quality // Quality parameter
-        );
-        
-        // Update the loading toast to success
-        toast.success("Image generation completed", {
-          id: generatingToast,
-          description: `Successfully generated ${newSettings.variations} image${newSettings.variations > 1 ? 's' : ''}`
-        });
+        // If we are saving to gallery, use unified endpoint; otherwise generate preview only
+        if (newSettings.saveImages) {
+          const savingToast = toast.loading("Generating and saving images...", {
+            description: `Creating ${newSettings.variations} image${newSettings.variations > 1 ? 's' : ''}${brandProtectionApplied ? ' (brand protection applied)' : ''}`,
+          });
+          
+          // Call unified endpoint to generate + analyze + save
+          const saveResp = await generateImagesWithAnalysis({
+            prompt: generationPrompt,
+            n: newSettings.variations,
+            size: newSettings.imageSize,
+            quality: newSettings.quality,
+            output_format: newSettings.outputFormat,
+            background: newSettings.background,
+            folder_path: newSettings.folder === 'root' ? '' : newSettings.folder,
+            model: 'gpt-image-1',
+            analyze: true,
+            save_all: true,
+          });
+
+          toast.success(`${saveResp.total_saved} images saved${saveResp.analyzed ? ' with AI analysis' : ''}`, {
+            id: savingToast,
+            description: newSettings.folder && newSettings.folder !== 'root' ? `Saved to folder: ${newSettings.folder}` : 'Saved to root folder',
+          });
+
+          // Trigger gallery refresh callback
+          if (onImagesSaved) {
+            onImagesSaved(saveResp.total_saved);
+          }
+
+          // Short-circuit further processing for unified path
+          setIsGenerating(false);
+          return;
+        } else {
+          // Generate preview only
+          const generatingToast = toast.loading("Generating images...", {
+            description: `Creating ${newSettings.variations} image${newSettings.variations > 1 ? 's' : ''} with your prompt${brandProtectionApplied ? ' (brand protection applied)' : ''}`,
+          });
+          response = await generateImages(
+            generationPrompt,
+            newSettings.variations,
+            newSettings.imageSize,
+            "b64_json",
+            newSettings.background,
+            newSettings.outputFormat,
+            newSettings.quality
+          );
+          toast.success("Image generation completed", {
+            id: generatingToast,
+            description: `Successfully generated ${newSettings.variations} image${newSettings.variations > 1 ? 's' : ''}`
+          });
+        }
       }
       
       // Store the brand protection info in the response for later use when saving
@@ -224,8 +256,8 @@ export function ImageCreationContainer({ className = "", onImagesSaved }: ImageC
       
       setGenerationResponseData(response);
       
-      // If AI analysis is enabled, we can analyze before saving
-      if (newSettings.saveImages && newSettings.brandProtectionModel === "GPT-4o") {
+      // If we generated preview only (not using unified), we can analyze before saving
+      if (!newSettings.saveImages && newSettings.brandProtectionModel === "GPT-4o") {
         // Check if we have base64 image data available (from generation)
         const hasBase64Images = response?.imgen_model_response?.data?.some(
           (item: ImageData) => item.b64_json
@@ -267,19 +299,7 @@ export function ImageCreationContainer({ className = "", onImagesSaved }: ImageC
         }
       }
       
-      // If saveImages is true, proceed to upload
-      if (newSettings.saveImages) {
-        await handleSaveImages(
-          response, 
-          response.brandProtection?.originalPrompt || originalPrompt, // Use original prompt (not protected) for saving metadata
-          true, // Enable analysis for testing
-          newSettings.folder === "root" ? "" : newSettings.folder,
-          newSettings.outputFormat,
-          newSettings.background,
-          newSettings.imageSize,
-          successfulAnalysis // Pass pre-analysis results directly
-        );
-      }
+      // If we used unified endpoint we already saved; otherwise optional save flow remains available elsewhere
       
     } catch (error) {
       console.error('Error in image operation:', error);
