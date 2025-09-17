@@ -1,6 +1,6 @@
 // Image service - handles all image-related API calls
-import { API_BASE_URL, ImageSaveResponse as ApiImageSaveResponse } from './api';
-import type { ImageGenerationResponse } from './api';
+import { API_BASE_URL, ImageSaveResponse as ApiImageSaveResponse, PipelineAction, runImagePipeline } from './api';
+import type { ImageGenerationResponse, ImagePipelineRequest } from './api';
 
 export type { ImageGenerationResponse } from './api';
 
@@ -9,35 +9,62 @@ interface PromptEnhancementResponse {
 }
 
 /**
- * Edit an image with a mask using OpenAI's GPT-4 Vision API
+ * Edit an image via the unified image pipeline endpoint.
  */
 export async function editImage(formData: FormData): Promise<ImageGenerationResponse> {
-  console.log(`Making request to ${API_BASE_URL}/images/edit/upload`);
-  
-  try {
-    // Call the backend API directly
-    const response = await fetch(`${API_BASE_URL}/images/edit/upload`, {
-      method: 'POST',
-      headers: {
-        // No Content-Type header as the browser sets it automatically with the correct boundary for FormData
-      },
-      // Don't include credentials for '*' origin setting
-      // credentials: 'include',
-      body: formData,
-      mode: 'cors',  // Explicitly set CORS mode
-    });
-    
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error(`Error from backend API: ${response.status} - ${errorText}`);
-      throw new Error(`Failed to edit image: ${response.status} - ${errorText}`);
-    }
-    
-    return response.json();
-  } catch (error) {
-    console.error('Fetch error in editImage:', error);
-    throw error;
+  const promptEntry = formData.get('prompt');
+  if (!promptEntry || typeof promptEntry !== 'string') {
+    throw new Error('Prompt is required for image editing');
   }
+
+  const n = Number(formData.get('n') ?? '1');
+  const size = String(formData.get('size') ?? 'auto');
+  const model = String(formData.get('model') ?? 'gpt-image-1');
+  const quality = String(formData.get('quality') ?? 'auto');
+  const inputFidelity = String(formData.get('input_fidelity') ?? 'low');
+
+  if (inputFidelity && !['low', 'high'].includes(inputFidelity)) {
+    throw new Error("input_fidelity must be either 'low' or 'high'");
+  }
+
+  const sourceImages = formData
+    .getAll('image')
+    .filter((entry): entry is File => entry instanceof File);
+
+  if (sourceImages.length === 0) {
+    throw new Error('At least one source image is required for editing');
+  }
+
+  const maskEntry = formData.get('mask');
+  const mask = maskEntry instanceof File ? maskEntry : null;
+
+  const pipelineRequest: ImagePipelineRequest = {
+    action: PipelineAction.EDIT,
+    prompt: promptEntry,
+    model,
+    n,
+    size,
+    response_format: 'b64_json',
+    quality,
+    input_fidelity: inputFidelity,
+    save_options: {
+      enabled: false,
+    },
+    analysis_options: {
+      enabled: false,
+    },
+  };
+
+  const pipelineResponse = await runImagePipeline(pipelineRequest, {
+    sourceImages,
+    mask,
+  });
+
+  if (!pipelineResponse.generation) {
+    throw new Error('Pipeline response did not include generation data');
+  }
+
+  return pipelineResponse.generation;
 }
 
 /**

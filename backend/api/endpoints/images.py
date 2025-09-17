@@ -8,11 +8,9 @@ import requests
 import json
 import io
 from PIL import Image
-from tempfile import SpooledTemporaryFile
-import tempfile
-import os
 import uuid
 from pathlib import Path
+from pydantic import ValidationError
 
 from backend.models.images import (
     ImageGenerationRequest,
@@ -33,12 +31,14 @@ from backend.models.images import (
     ImageFilenameGenerateResponse,
     ImageSaveRequest,
     ImageSaveResponse,
-    TokenUsage,
-    InputTokensDetails,
     ImageGenerateWithAnalysisRequest,
+    ImagePipelineRequest,
+    ImagePipelineResponse,
+    PipelineAction,
+    PipelineSaveOptions,
+    PipelineAnalysisOptions,
 )
-from backend.models.gallery import MediaType
-from backend.core import llm_client, dalle_client, image_sas_token
+from backend.core import llm_client, image_sas_token
 from backend.core.azure_storage import AzureBlobStorageService
 from backend.core.analyze import ImageAnalyzer
 from backend.core.config import settings
@@ -50,12 +50,15 @@ from backend.core.instructions import (
     filename_system_message,
 )
 from backend.core.cosmos_client import CosmosDBService
+from backend.core.image_pipeline import ImagePipelineService
 
 router = APIRouter()
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+pipeline_service = ImagePipelineService()
 
 
 def get_cosmos_service() -> Optional[CosmosDBService]:
@@ -149,150 +152,13 @@ async def generate_filename_for_prompt(prompt: str, extension: str = None) -> st
 @router.post("/generate", response_model=ImageGenerationResponse)
 async def generate_image(request: ImageGenerationRequest):
     """Generate an image based on the provided prompt and settings"""
-    try:
-        # Prepare parameters based on request
-        params = {
-            "prompt": request.prompt,
-            "model": request.model,
-            "n": request.n,
-            "size": request.size,
-        }
-
-        # Add gpt-image-1 specific parameters if applicable
-        if request.model == "gpt-image-1":
-            if request.quality:
-                params["quality"] = request.quality
-            # Always include background parameter regardless of value
-            params["background"] = request.background
-            if request.output_format != "png":
-                params["output_format"] = request.output_format
-            if (
-                request.output_format in ["webp", "jpeg"]
-                and request.output_compression != 100
-            ):
-                params["output_compression"] = request.output_compression
-            if request.moderation != "auto":
-                params["moderation"] = request.moderation
-            if request.user:
-                params["user"] = request.user
-
-        # Generate image
-        response = dalle_client.generate_image(**params)
-
-        # Create token usage information if available
-        token_usage = None
-        if "usage" in response:
-            input_tokens_details = None
-            if "input_tokens_details" in response["usage"]:
-                input_tokens_details = InputTokensDetails(
-                    text_tokens=response["usage"]["input_tokens_details"].get(
-                        "text_tokens", 0
-                    ),
-                    image_tokens=response["usage"]["input_tokens_details"].get(
-                        "image_tokens", 0
-                    ),
-                )
-
-            token_usage = TokenUsage(
-                total_tokens=response["usage"].get("total_tokens", 0),
-                input_tokens=response["usage"].get("input_tokens", 0),
-                output_tokens=response["usage"].get("output_tokens", 0),
-                input_tokens_details=input_tokens_details,
-            )
-
-        return ImageGenerationResponse(
-            success=True,
-            message="Refer to the imgen_model_response for details",
-            imgen_model_response=response,
-            token_usage=token_usage,
-        )
-    except Exception as e:
-        logger.error(f"Error in /generate endpoint: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+    return await pipeline_service.generate(request)
 
 
 @router.post("/edit", response_model=ImageGenerationResponse)
 async def edit_image(request: ImageEditRequest):
     """Edit an input image based on the provided prompt, mask image and settings"""
-    try:
-        # Validate file size for all images
-        max_file_size_mb = settings.GPT_IMAGE_MAX_FILE_SIZE_MB
-
-        # Prepare parameters based on request
-        params = {
-            "prompt": request.prompt,
-            "model": request.model,
-            "n": request.n,
-            "size": request.size,
-            "image": request.image,
-        }
-
-        # Add mask if provided
-        if request.mask:
-            params["mask"] = request.mask
-
-        # Add gpt-image-1 specific parameters if applicable
-        if request.model == "gpt-image-1":
-            if request.quality:
-                params["quality"] = request.quality
-            if request.output_format != "png":
-                params["output_format"] = request.output_format
-            if (
-                request.output_format in ["webp", "jpeg"]
-                and request.output_compression != 100
-            ):
-                params["output_compression"] = request.output_compression
-            if request.input_fidelity and request.input_fidelity != "low":
-                params["input_fidelity"] = request.input_fidelity
-            if request.user:
-                params["user"] = request.user
-
-            # Check if organization is verified when using multiple images
-            if isinstance(request.image, list):
-                image_count = len(request.image)
-                if image_count > 1 and not settings.OPENAI_ORG_VERIFIED:
-                    logger.warning(
-                        "Using multiple reference images requires organization verification"
-                    )
-
-        # Perform image editing
-        response = dalle_client.edit_image(**params)
-
-        # Create token usage information if available
-        token_usage = None
-        if "usage" in response:
-            input_tokens_details = None
-            if "input_tokens_details" in response["usage"]:
-                input_tokens_details = InputTokensDetails(
-                    text_tokens=response["usage"]["input_tokens_details"].get(
-                        "text_tokens", 0
-                    ),
-                    image_tokens=response["usage"]["input_tokens_details"].get(
-                        "image_tokens", 0
-                    ),
-                )
-
-            token_usage = TokenUsage(
-                total_tokens=response["usage"].get("total_tokens", 0),
-                input_tokens=response["usage"].get("input_tokens", 0),
-                output_tokens=response["usage"].get("output_tokens", 0),
-                input_tokens_details=input_tokens_details,
-            )
-
-            # Log token usage for cost tracking
-            logger.info(
-                f"Token usage - Total: {token_usage.total_tokens}, Input: {token_usage.input_tokens}, Output: {token_usage.output_tokens}"
-            )
-
-        return ImageGenerationResponse(
-            success=True,
-            message="Refer to the imgen_model_response for details",
-            imgen_model_response=response,
-            token_usage=token_usage,
-        )
-    except Exception as e:
-        logger.error(f"Error in /edit endpoint: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+    return await pipeline_service.edit(request)
 
 
 @router.post("/edit/upload", response_model=ImageGenerationResponse)
@@ -307,216 +173,18 @@ async def edit_image_upload(
     image: List[UploadFile] = File(...),
     mask: Optional[UploadFile] = File(None),
 ):
-    """Edit input images uploaded via multipart form data
-
-    Supports input_fidelity parameter for gpt-image-1:
-    - 'low' (default): Standard fidelity, faster processing
-    - 'high': Better reproduction of input image features, additional cost (~$0.04-$0.06 per image)
-    """
-    try:
-        # Validate input_fidelity parameter
-        if input_fidelity not in ["low", "high"]:
-            raise HTTPException(
-                status_code=400,
-                detail="input_fidelity must be either 'low' or 'high'"
-            )
-
-        # Validate file size for all images
-        max_file_size_mb = settings.GPT_IMAGE_MAX_FILE_SIZE_MB
-        temp_files = []
-
-        try:
-            # Process each uploaded image
-            image_file_objs = []
-            for idx, img in enumerate(image):
-                # Check file size
-                contents = await img.read()
-                file_size_mb = len(contents) / (1024 * 1024)
-                if file_size_mb > max_file_size_mb:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Image {idx + 1} exceeds maximum size of {max_file_size_mb}MB",
-                    )
-
-                # Create a temporary file with the right extension based on content type
-                content_type = img.content_type or "image/png"
-                ext = content_type.split("/")[-1]
-                if ext not in ["jpeg", "jpg", "png", "webp"]:
-                    # Try to determine the format from the file data
-                    try:
-                        with Image.open(io.BytesIO(contents)) as pil_img:
-                            ext = pil_img.format.lower() if pil_img.format else "png"
-                    except Exception:
-                        ext = "png"  # Default to PNG if we can't determine format
-
-                # Ensure proper extension
-                if ext == "jpg":
-                    ext = "jpeg"
-
-                # Create a named temporary file with the correct extension
-                temp_fd, temp_path = tempfile.mkstemp(suffix=f".{ext}")
-                temp_files.append((temp_fd, temp_path))
-
-                # Write the contents and close the file descriptor
-                with os.fdopen(temp_fd, "wb") as f:
-                    f.write(contents)
-
-                # Store the file path for the API call
-                image_file_objs.append(temp_path)
-
-                logger.info(
-                    f"Saved image {idx + 1} to {temp_path} with format {ext}")
-
-            # Process mask if provided
-            mask_file_obj = None
-            if mask:
-                mask_contents = await mask.read()
-
-                # Determine mask format
-                mask_content_type = mask.content_type or "image/png"
-                mask_ext = mask_content_type.split("/")[-1]
-                if mask_ext not in ["jpeg", "jpg", "png", "webp"]:
-                    # Try to determine the format from the file data
-                    try:
-                        with Image.open(io.BytesIO(mask_contents)) as pil_img:
-                            mask_ext = (
-                                pil_img.format.lower() if pil_img.format else "png"
-                            )
-                    except Exception:
-                        mask_ext = "png"  # Default to PNG
-
-                # Ensure proper extension
-                if mask_ext == "jpg":
-                    mask_ext = "jpeg"
-
-                # Create a named temporary file for the mask
-                mask_fd, mask_path = tempfile.mkstemp(suffix=f".{mask_ext}")
-                temp_files.append((mask_fd, mask_path))
-
-                # Write the mask contents
-                with os.fdopen(mask_fd, "wb") as f:
-                    f.write(mask_contents)
-
-                mask_file_obj = mask_path
-                logger.info(
-                    f"Saved mask to {mask_path} with format {mask_ext}")
-
-            # Prepare parameters for the OpenAI API call
-            logger.info(
-                f"Editing {len(image_file_objs)} image(s) using {model}, quality: {quality}, size: {size}"
-            )
-
-            # Create a dictionary of parameters for the API call
-            params = {
-                "prompt": prompt,
-                "model": model,
-                "n": n,
-                "size": size,
-            }
-
-            # Add quality parameter for gpt-image-1
-            if model == "gpt-image-1":
-                params["quality"] = quality
-                if input_fidelity and input_fidelity != "low":
-                    params["input_fidelity"] = input_fidelity
-                # Note: output_format is not supported for image editing in the OpenAI API
-                # Keeping this commented to document the limitation
-                # if output_format != "png":
-                #     params["output_format"] = output_format
-
-            # Make the API call with proper file objects
-            # The OpenAI SDK expects image parameter to be a file-like object opened in binary mode
-            if len(image_file_objs) == 1:
-                # Single image case
-                with open(image_file_objs[0], "rb") as image_file:
-                    params["image"] = image_file
-
-                    # Add mask if provided
-                    if mask_file_obj:
-                        with open(mask_file_obj, "rb") as mask_file:
-                            params["mask"] = mask_file
-                            response = dalle_client.edit_image(**params)
-                    else:
-                        response = dalle_client.edit_image(**params)
-            else:
-                # Multiple images case (only for gpt-image-1)
-                # For multiple files, we need to open them one by one
-                # This is a bit complicated because we need to have all files open simultaneously
-                # Create a list to hold all open file handles to close them later
-                open_files = []
-                try:
-                    image_files = []
-                    for path in image_file_objs:
-                        f = open(path, "rb")
-                        open_files.append(f)
-                        image_files.append(f)
-
-                    params["image"] = image_files
-
-                    # Add mask if provided
-                    if mask_file_obj:
-                        mask_f = open(mask_file_obj, "rb")
-                        open_files.append(mask_f)
-                        params["mask"] = mask_f
-
-                    response = dalle_client.edit_image(**params)
-                finally:
-                    # Close all open file handles
-                    for f in open_files:
-                        f.close()
-
-            # Process response and create token usage info
-            token_usage = None
-            if "usage" in response:
-                input_tokens_details = None
-                if "input_tokens_details" in response["usage"]:
-                    input_tokens_details = InputTokensDetails(
-                        text_tokens=response["usage"]["input_tokens_details"].get(
-                            "text_tokens", 0
-                        ),
-                        image_tokens=response["usage"]["input_tokens_details"].get(
-                            "image_tokens", 0
-                        ),
-                    )
-
-                token_usage = TokenUsage(
-                    total_tokens=response["usage"].get("total_tokens", 0),
-                    input_tokens=response["usage"].get("input_tokens", 0),
-                    output_tokens=response["usage"].get("output_tokens", 0),
-                    input_tokens_details=input_tokens_details,
-                )
-
-                # Log token usage for cost tracking
-                logger.info(
-                    f"Token usage - Total: {token_usage.total_tokens}, Input: {token_usage.input_tokens}, Output: {token_usage.output_tokens}"
-                )
-
-            return ImageGenerationResponse(
-                success=True,
-                message="Refer to the imgen_model_response for details",
-                imgen_model_response=response,
-                token_usage=token_usage,
-            )
-
-        finally:
-            # Cleanup temporary files
-            for fd, path in temp_files:
-                try:
-                    # The file descriptor is already closed, just remove the file
-                    if os.path.exists(path):
-                        os.remove(path)
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to remove temp file {path}: {str(e)}")
-
-    except Exception as e:
-        logger.error(
-            f"Error in /edit/upload endpoint: {str(e)}", exc_info=True)
-        # Provide more explicit errors for debugging
-        error_detail = str(e)
-        if isinstance(e, HTTPException):
-            error_detail = e.detail
-        raise HTTPException(status_code=500, detail=error_detail)
+    """Edit input images uploaded via multipart form data."""
+    return await pipeline_service.edit_with_uploads(
+        prompt=prompt,
+        model=model,
+        n=n,
+        size=size,
+        quality=quality,
+        output_format=output_format,
+        input_fidelity=input_fidelity,
+        images=image,
+        mask=mask,
+    )
 
 
 @router.post("/save", response_model=ImageSaveResponse)
@@ -527,365 +195,56 @@ async def save_generated_images(
     ),
     cosmos_service: Optional[CosmosDBService] = Depends(get_cosmos_service),
 ):
-    """
-    Save generated images to blob storage and create metadata records in Cosmos DB.
-    Optionally analyze images and store analysis results in the same transaction.
-    """
+    """Save generated images to blob storage and update metadata."""
+    return await pipeline_service.save(
+        request,
+        azure_storage_service=azure_storage_service,
+        cosmos_service=cosmos_service,
+    )
+
+
+@router.post("/pipeline", response_model=ImagePipelineResponse)
+async def process_image_pipeline(
+    payload: str = Form(...),
+    source_images: Optional[List[UploadFile]] = File(
+        None, description="Source images for edit workflows"
+    ),
+    image: Optional[List[UploadFile]] = File(
+        None,
+        description="Legacy field name for source images",
+    ),
+    mask: Optional[UploadFile] = File(None),
+    azure_storage_service: AzureBlobStorageService = Depends(
+        lambda: AzureBlobStorageService()
+    ),
+    cosmos_service: Optional[CosmosDBService] = Depends(get_cosmos_service),
+):
+    """Unified pipeline endpoint for generation, editing, saving, and analysis."""
     try:
-        # Check if we have a valid generation response
-        if (
-            not request.generation_response
-            or not request.generation_response.imgen_model_response
-        ):
-            raise HTTPException(
-                status_code=400, detail="No valid image generation response provided"
-            )
+        pipeline_request = ImagePipelineRequest.parse_raw(payload)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=json.loads(exc.json()))
 
-        # Extract image data from the generation response
-        images_data = request.generation_response.imgen_model_response.get("data", [
-        ])
-        if not images_data:
-            raise HTTPException(
-                status_code=400, detail="No images found in the generation response"
-            )
+    storage_service = (
+        azure_storage_service if pipeline_request.save_options.enabled else None
+    )
 
-        # Process only the first image if save_all is False
-        if not request.save_all:
-            images_data = [images_data[0]]
+    uploaded_images: Optional[List[UploadFile]] = None
+    if source_images or image:
+        uploaded_images = []
+        if source_images:
+            uploaded_images.extend(source_images)
+        if image:
+            uploaded_images.extend(image)
 
-        # Prepare metadata
-        metadata = {}
-        if request.prompt:
-            metadata["prompt"] = request.prompt
-        if request.model:
-            metadata["model"] = request.model
-            if request.model == "gpt-image-1" and hasattr(request, "quality"):
-                metadata["quality"] = request.quality
-            if request.model == "gpt-image-1" and hasattr(request, "background"):
-                metadata["background"] = request.background
-        if request.size:
-            metadata["size"] = request.size
+    return await pipeline_service.process_pipeline(
+        pipeline_request,
+        azure_storage_service=storage_service,
+        cosmos_service=cosmos_service,
+        source_images=uploaded_images,
+        mask=mask,
+    )
 
-        # Convert and save each image
-        saved_images = []
-        for idx, img_data in enumerate(images_data):
-            img_file = None
-            filename = None
-
-            # Handle different response formats (url or b64_json)
-            if "b64_json" in img_data:
-                # Decode base64 image
-                image_bytes = base64.b64decode(img_data["b64_json"])
-                img_file = io.BytesIO(image_bytes)
-
-                # Use PIL to determine image format and handle transparent background
-                with Image.open(img_file) as img:
-                    img_format = img.format or "PNG"
-                    has_transparency = img.mode == "RGBA" and "A" in img.getbands()
-
-                    # Add width and height to metadata as integers
-                    metadata["width"] = img.width
-                    metadata["height"] = img.height
-
-                    if has_transparency:
-                        metadata["has_transparency"] = "true"
-                        if img_format.upper() != "PNG":
-                            img_format = "PNG"
-                            img_file = io.BytesIO()
-                            img.save(img_file, format="PNG")
-
-                img_file.seek(0)
-
-                # Generate intelligent filename
-                if request.prompt:
-                    filename = await generate_filename_for_prompt(
-                        request.prompt, f".{img_format.lower()}"
-                    )
-
-                    if filename and len(images_data) > 1:
-                        path = Path(filename)
-                        stem = path.stem
-                        suffix = path.suffix
-                        filename = f"{stem}_{idx + 1}{suffix}"
-
-                if not filename:
-                    quality_suffix = (
-                        f"_{request.quality}"
-                        if request.model == "gpt-image-1"
-                        and hasattr(request, "quality")
-                        else ""
-                    )
-                    filename = f"generated_image_{idx + 1}{quality_suffix}.{img_format.lower()}"
-                    filename = normalize_filename(filename)
-
-            elif "url" in img_data:
-                # Download image from URL
-                response = requests.get(img_data["url"])
-                if response.status_code != 200:
-                    logger.error(
-                        f"Failed to download image from URL: {img_data['url']}"
-                    )
-                    continue
-
-                img_file = io.BytesIO(response.content)
-                content_type = response.headers.get(
-                    "Content-Type", "image/png")
-                ext = content_type.split("/")[-1]
-
-                # Check if image has transparency using PIL and get dimensions
-                with Image.open(img_file) as img:
-                    has_transparency = img.mode == "RGBA" and "A" in img.getbands()
-
-                    # Add width and height to metadata as integers
-                    metadata["width"] = img.width
-                    metadata["height"] = img.height
-
-                    if has_transparency:
-                        metadata["has_transparency"] = "true"
-
-                img_file.seek(0)
-
-                # Generate filename
-                if request.prompt:
-                    filename = await generate_filename_for_prompt(
-                        request.prompt, f".{ext}"
-                    )
-
-                    if filename and len(images_data) > 1:
-                        path = Path(filename)
-                        stem = path.stem
-                        suffix = path.suffix
-                        filename = f"{stem}_{idx + 1}{suffix}"
-
-                if not filename:
-                    quality_suffix = (
-                        f"_{request.quality}"
-                        if request.model == "gpt-image-1"
-                        and hasattr(request, "quality")
-                        else ""
-                    )
-                    filename = f"generated_image_{idx + 1}{quality_suffix}.{ext}"
-                    filename = normalize_filename(filename)
-            else:
-                logger.warning(
-                    f"Unsupported image data format for image {idx + 1}")
-                continue
-
-            if img_file and filename:
-                # Add index metadata
-                img_metadata = metadata.copy()
-                img_metadata["image_index"] = str(idx + 1)
-                img_metadata["total_images"] = str(len(images_data))
-
-                # Create FastAPI UploadFile object
-                file = UploadFile(filename=filename, file=img_file)
-
-                # Upload to Azure Blob Storage (no metadata stored in blob)
-                result = await azure_storage_service.upload_asset(
-                    file,
-                    MediaType.IMAGE.value,
-                    metadata=None,  # No longer store metadata in blob storage
-                    folder_path=request.folder_path,
-                )
-
-                # Create metadata record in Cosmos DB if available
-                if cosmos_service:
-                    try:
-                        # Extract asset ID from blob name
-                        asset_id = result["blob_name"].split(
-                            ".")[0].split("/")[-1]
-
-                        # Prepare enhanced metadata for Cosmos DB
-                        # Ensure dimensions are stored as integers
-                        width_val = result.get("width") or img_metadata.get("width")
-                        height_val = result.get("height") or img_metadata.get("height")
-                        width = int(width_val) if width_val else None
-                        height = int(height_val) if height_val else None
-                        
-                        # Build cosmos metadata, excluding None/null values
-                        cosmos_metadata = {
-                            "id": asset_id,
-                            "media_type": "image",
-                            "blob_name": result["blob_name"],
-                            "container": result["container"],
-                            "url": result["url"],
-                            "filename": result["original_filename"],
-                            "size": result["size"],
-                            "content_type": result["content_type"],
-                            "folder_path": result["folder_path"],
-                            "prompt": request.prompt,
-                            "model": request.model,
-                        }
-                        
-                        # Only add optional fields if they have meaningful values
-                        quality = getattr(request, "quality", None)
-                        if quality and quality != "auto":
-                            cosmos_metadata["quality"] = quality
-                            
-                        background = getattr(request, "background", None)  
-                        if background and background != "auto":
-                            cosmos_metadata["background"] = background
-                            
-                        output_format = getattr(request, "output_format", None)
-                        if output_format:
-                            cosmos_metadata["output_format"] = output_format
-                            
-                        if "has_transparency" in locals() and has_transparency is not None:
-                            cosmos_metadata["has_transparency"] = has_transparency
-                            
-                        if width is not None:
-                            cosmos_metadata["width"] = width
-                        if height is not None:
-                            cosmos_metadata["height"] = height
-                            
-                        # Store remaining metadata as custom_metadata (excluding None values)
-                        custom_meta = {k: v for k, v in img_metadata.items() if k not in ["width", "height"] and v is not None}
-                        if custom_meta:
-                            cosmos_metadata["custom_metadata"] = custom_meta
-
-                        # Remove None values
-                        cosmos_metadata = {
-                            k: v for k, v in cosmos_metadata.items() if v is not None
-                        }
-
-                        cosmos_service.create_asset_metadata(cosmos_metadata)
-                        logger.info(
-                            f"Created Cosmos DB metadata for image: {asset_id}")
-                    except Exception as cosmos_error:
-                        logger.warning(
-                            f"Failed to create Cosmos DB metadata for image: {cosmos_error}"
-                        )
-
-                saved_images.append(result)
-                await file.close()
-
-        # Perform analysis if requested
-        analysis_results = []
-        analyzed = False
-
-        if request.analyze and saved_images and cosmos_service:
-            try:
-                logger.info(
-                    f"Starting analysis for {len(saved_images)} saved images")
-                analyzed = True
-
-                from backend.core.analyze import ImageAnalyzer
-                image_analyzer = ImageAnalyzer(
-                    llm_client, settings.LLM_DEPLOYMENT)
-
-                for idx, saved_image in enumerate(saved_images):
-                    try:
-                        # Get the image URL and prepare for analysis
-                        image_url = saved_image["url"]
-                        blob_name = saved_image["blob_name"]
-
-                        # Add SAS token if needed for image download
-                        if "?" not in image_url:
-                            image_url += f"?{image_sas_token}"
-
-                        # Download the image content
-                        logger.info(
-                            f"Downloading image for analysis: {blob_name}")
-                        import requests
-                        response = requests.get(image_url, timeout=30)
-                        if response.status_code != 200:
-                            raise Exception(
-                                f"Failed to download image: HTTP {response.status_code}")
-
-                        # Convert to base64 for analysis
-                        image_content = response.content
-                        image_base64 = base64.b64encode(
-                            image_content).decode("utf-8")
-
-                        # Analyze the image
-                        logger.info(
-                            f"Analyzing image {idx + 1}/{len(saved_images)}: {blob_name}")
-                        analysis = image_analyzer.image_chat(
-                            image_base64, analyze_image_system_message)
-
-                        if analysis:
-                            logger.info(f"Analysis result: {analysis}")
-
-                            # Extract asset ID from blob name
-                            asset_id = saved_image["blob_name"].split(".")[
-                                0].split("/")[-1]
-
-                            # Prepare analysis results for Cosmos DB update as nested structure
-                            # Standardize field naming: use "summary" consistently
-                            analysis_data = {
-                                "summary": analysis.get("description", "No summary provided"),
-                                "products": analysis.get("products", "None identified"),
-                                "tags": analysis.get("tags", []),
-                                "feedback": analysis.get("feedback", "No feedback provided"),
-                                "analyzed_at": datetime.utcnow().isoformat()
-                            }
-                            
-                            analysis_update = {
-                                "analysis": analysis_data,
-                                "has_analysis": True
-                            }
-
-                            logger.info(
-                                f"Analysis update for {asset_id}: {analysis_update}")
-
-                            # Update Cosmos DB with analysis results
-                            cosmos_service.update_asset_metadata(
-                                asset_id, "image", analysis_update)
-
-                            # Add to response
-                            analysis_results.append({
-                                "blob_name": saved_image["blob_name"],
-                                "asset_id": asset_id,
-                                "analysis": analysis,
-                                "success": True
-                            })
-
-                            logger.info(
-                                f"Successfully analyzed and updated metadata for: {saved_image['blob_name']}")
-                        else:
-                            logger.warning(
-                                f"No analysis results returned for {blob_name}")
-                            analysis_results.append({
-                                "blob_name": saved_image["blob_name"],
-                                "error": "No analysis results returned from AI model",
-                                "success": False
-                            })
-
-                    except Exception as analysis_error:
-                        logger.error(
-                            f"Failed to analyze image {saved_image['blob_name']}: {str(analysis_error)}")
-                        analysis_results.append({
-                            "blob_name": saved_image["blob_name"],
-                            "error": str(analysis_error),
-                            "success": False
-                        })
-
-            except Exception as e:
-                logger.error(f"Error during analysis phase: {str(e)}")
-                # Don't fail the entire operation if analysis fails
-                analyzed = False
-
-        # Prepare response message
-        base_message = f"Successfully saved {len(saved_images)} images to blob storage and metadata"
-        if analyzed and analysis_results:
-            successful_analyses = sum(
-                1 for r in analysis_results if r.get("success"))
-            base_message += f", analyzed {successful_analyses}/{len(analysis_results)} images"
-
-        return ImageSaveResponse(
-            success=True,
-            message=base_message,
-            saved_images=saved_images,
-            total_saved=len(saved_images),
-            prompt=request.prompt,
-            analysis_results=analysis_results if analyzed else None,
-            analyzed=analyzed,
-        )
-    except Exception as e:
-        logger.error(f"Error saving generated images: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=500, detail=f"Error saving generated images: {str(e)}"
-        )
 
 @router.post("/generate-with-analysis", response_model=ImageSaveResponse)
 async def generate_image_with_analysis(
@@ -895,61 +254,43 @@ async def generate_image_with_analysis(
     ),
     cosmos_service: Optional[CosmosDBService] = Depends(get_cosmos_service),
 ):
-    """
-    Generate image(s), then save to storage and optionally analyze in one call.
-    Reuses existing generation and save logic to avoid duplication.
-    """
-    try:
-        # Build generation parameters (same as /images/generate)
-        params = {
-            "prompt": req.prompt,
-            "model": req.model,
-            "n": req.n,
-            "size": req.size,
-        }
-
-        if req.model == "gpt-image-1":
-            if req.quality:
-                params["quality"] = req.quality
-            params["background"] = req.background
-            if req.output_format and req.output_format != "png":
-                params["output_format"] = req.output_format
-            if req.output_format in ["webp", "jpeg"] and req.output_compression != 100:
-                params["output_compression"] = req.output_compression
-            if req.moderation and req.moderation != "auto":
-                params["moderation"] = req.moderation
-            if req.user:
-                params["user"] = req.user
-
-        # Generate images via model client
-        response = dalle_client.generate_image(**params)
-
-        # Construct generation response to feed into existing /save logic
-        gen_response = ImageGenerationResponse(
-            success=True,
-            message="Image(s) generated successfully",
-            imgen_model_response=response,
-            token_usage=None,
-        )
-
-        save_request = ImageSaveRequest(
-            generation_response=gen_response,
-            prompt=req.prompt,
-            model=req.model,
-            size=req.size,
-            background=req.background,
-            output_format=req.output_format,
+    """Generate, save, and optionally analyze images in one call."""
+    pipeline_request = ImagePipelineRequest(
+        action=PipelineAction.GENERATE,
+        prompt=req.prompt,
+        model=req.model,
+        n=req.n,
+        size=req.size,
+        response_format=req.response_format,
+        quality=req.quality,
+        output_format=req.output_format,
+        output_compression=req.output_compression,
+        background=req.background,
+        moderation=req.moderation,
+        user=req.user,
+        save_options=PipelineSaveOptions(
+            enabled=True,
             save_all=req.save_all,
             folder_path=req.folder_path,
-            analyze=req.analyze,
+        ),
+        analysis_options=PipelineAnalysisOptions(
+            enabled=req.analyze,
+        ),
+    )
+
+    pipeline_response = await pipeline_service.process_pipeline(
+        pipeline_request,
+        azure_storage_service=azure_storage_service,
+        cosmos_service=cosmos_service,
+    )
+
+    if not pipeline_response.save:
+        raise HTTPException(
+            status_code=500,
+            detail="Pipeline did not produce a save response",
         )
 
-        # Call existing save endpoint function directly with explicit deps
-        return await save_generated_images(save_request, azure_storage_service, cosmos_service)
-    except Exception as e:
-        logger.error(f"Error in /images/generate-with-analysis: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
+    return pipeline_response.save
 
 @router.post("/list", response_model=ImageListResponse)
 async def list_images(request: ImageListRequest):
