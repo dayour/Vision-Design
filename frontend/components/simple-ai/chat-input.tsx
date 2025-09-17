@@ -45,11 +45,11 @@ export function ChatInput({
     // Auto-resize based on content
     const lineHeight = 24;
     const padding = 16;
-    const minHeight = lineHeight + padding;
-    const maxHeight = maxRows * lineHeight + padding;
-    
     const scrollHeight = e.target.scrollHeight;
-    const newRows = Math.min(Math.max(1, Math.floor((scrollHeight - padding) / lineHeight)), maxRows);
+    const newRows = Math.min(
+      Math.max(1, Math.floor((scrollHeight - padding) / lineHeight)),
+      maxRows
+    );
     setRows(newRows);
   }, [onChange, maxRows]);
 

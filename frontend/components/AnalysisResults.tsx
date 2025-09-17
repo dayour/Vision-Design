@@ -7,9 +7,10 @@ import { MessageContent } from "@/components/simple-ai/message-content";
 import { Copy, Download, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
+import type { ImageAnalysisResponse } from "@/services/api";
 
 interface AnalysisResultsProps {
-  results: any;
+  results: ImageAnalysisResponse | null;
   isLoading: boolean;
   customPrompt: string;
 }
@@ -57,7 +58,8 @@ export function AnalysisResults({ results, isLoading, customPrompt }: AnalysisRe
   }
 
   const handleCopyResults = () => {
-    const resultText = `Analysis Results:\n\nPrompt: ${customPrompt}\n\nDescription: ${results.description}\n\nProducts: ${results.products}\n\nTags: ${results.tags?.join(', ')}\n\nFeedback: ${results.feedback}`;
+    const tagsText = results.tags?.join(', ');
+    const resultText = `Analysis Results:\n\nPrompt: ${customPrompt}\n\nDescription: ${results.description}\n\nProducts: ${results.products}\n\nTags: ${tagsText || ""}\n\nFeedback: ${results.feedback}`;
     navigator.clipboard.writeText(resultText);
     toast.success("Results copied to clipboard");
   };

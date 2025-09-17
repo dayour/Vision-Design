@@ -135,13 +135,34 @@ export interface AssetMetadata {
 /**
  * Interface for image generation response
  */
+export interface InputTokensDetails {
+  text_tokens?: number;
+  image_tokens?: number;
+}
+
+export interface TokenUsage {
+  total_tokens: number;
+  input_tokens: number;
+  output_tokens: number;
+  input_tokens_details?: InputTokensDetails;
+}
+
 export interface ImageGenerationResponse {
-  created: number;
-  data: Array<{
-    url?: string;
-    b64_json?: string;
-    revised_prompt?: string;
-  }>;
+  success: boolean;
+  message?: string;
+  error?: string;
+  imgen_model_response?: {
+    created?: number;
+    data?: Array<{
+      url?: string;
+      b64_json?: string;
+      revised_prompt?: string;
+      [key: string]: unknown;
+    }>;
+    [key: string]: unknown;
+  };
+  token_usage?: TokenUsage;
+  [key: string]: unknown;
 }
 
 /**
@@ -1596,6 +1617,12 @@ export async function editImage(
 /**
  * Analyze an image using a custom prompt
  */
+interface CustomAnalysisRequestBody {
+  custom_prompt: string;
+  image_path?: string;
+  base64_image?: string;
+}
+
 export async function analyzeImageCustom(
   imageUrl?: string,
   base64Image?: string, 
@@ -1628,7 +1655,7 @@ export async function analyzeImageCustom(
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 60000); // 60 second timeout
       
-      const requestBody: any = {
+      const requestBody: CustomAnalysisRequestBody = {
         custom_prompt: customPrompt
       };
       

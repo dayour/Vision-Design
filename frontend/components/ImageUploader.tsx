@@ -1,4 +1,5 @@
 import { useState, useRef } from "react";
+import Image from "next/image";
 import { Button } from "@/components/ui/button";
 import { Upload, X, Image as ImageIcon } from "lucide-react";
 import { toast } from "sonner";
@@ -72,11 +73,14 @@ export function ImageUploader({ onImageSelected, disabled = false }: ImageUpload
   return (
     <div className="flex flex-col items-center space-y-2">
       {previewUrl ? (
-        <div className="relative">
-          <img 
+        <div className="relative h-16 w-16">
+          <Image 
             src={previewUrl} 
             alt="Selected image" 
-            className="w-16 h-16 object-cover rounded-md border border-gray-500/30"
+            fill
+            className="rounded-md border border-gray-500/30 object-cover"
+            sizes="64px"
+            unoptimized
           />
           <button 
             onClick={handleRemoveImage}

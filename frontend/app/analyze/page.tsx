@@ -1,13 +1,14 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import Image from "next/image";
 import { PageHeader } from "@/components/page-header";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ImageUploader } from "@/components/ImageUploader";
 import { ChatInput } from "@/components/simple-ai/chat-input";
 import { AnalysisResults } from "@/components/AnalysisResults";
 import { Button } from "@/components/ui/button";
-import { analyzeImageCustom } from "@/services/api";
+import { analyzeImageCustom, type ImageAnalysisResponse } from "@/services/api";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { PageTransition } from "@/components/ui/page-transition";
@@ -18,7 +19,7 @@ export default function AnalyzePage() {
   const [uploadedImage, setUploadedImage] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [customPrompt, setCustomPrompt] = useState("");
-  const [analysisResults, setAnalysisResults] = useState<any>(null);
+  const [analysisResults, setAnalysisResults] = useState<ImageAnalysisResponse | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
 
   // Initialize with default prompt from settings
@@ -99,11 +100,16 @@ export default function AnalyzePage() {
                 />
                 {imagePreview && (
                   <div className="mt-4">
-                    <img 
-                      src={imagePreview} 
-                      alt="Preview" 
-                      className="max-h-64 rounded-lg object-contain mx-auto border"
-                    />
+                    <div className="relative mx-auto h-64 w-full max-w-md">
+                      <Image 
+                        src={imagePreview} 
+                        alt="Preview" 
+                        fill
+                        className="object-contain rounded-lg border"
+                        sizes="(max-width: 768px) 100vw, 33vw"
+                        unoptimized
+                      />
+                    </div>
                     <p className="text-xs text-muted-foreground text-center mt-2">
                       {uploadedImage?.name} ({Math.round((uploadedImage?.size || 0) / 1024)}KB)
                     </p>

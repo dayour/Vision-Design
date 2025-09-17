@@ -135,6 +135,7 @@ export function ImageCreationContainer({ className = "", onImagesSaved }: ImageC
         brandsList: newSettings.brandsList || []
       });
       setSelectedFolder(newSettings.folder);
+      const normalizedFolder = newSettings.folder === 'root' ? '' : newSettings.folder;
       
       // Store the original prompt
       const originalPrompt = newSettings.prompt;
@@ -167,7 +168,7 @@ export function ImageCreationContainer({ className = "", onImagesSaved }: ImageC
       }
       
       let successfulAnalysis: ImageAnalysis[] | undefined = undefined; // Declare outside the if block
-      let response;
+      let response: GenerationResponse;
       
       // If source images are provided, use the edit endpoint
       if (newSettings.sourceImages && newSettings.sourceImages.length > 0) {
@@ -206,7 +207,7 @@ export function ImageCreationContainer({ className = "", onImagesSaved }: ImageC
             quality: newSettings.quality,
             output_format: newSettings.outputFormat,
             background: newSettings.background,
-            folder_path: newSettings.folder === 'root' ? '' : newSettings.folder,
+            folder_path: normalizedFolder,
             model: 'gpt-image-1',
             analyze: true,
             save_all: true,
@@ -255,6 +256,18 @@ export function ImageCreationContainer({ className = "", onImagesSaved }: ImageC
       };
       
       setGenerationResponseData(response);
+
+      if (newSettings.sourceImages && newSettings.sourceImages.length > 0 && newSettings.saveImages) {
+        await handleSaveImages(
+          response,
+          originalPrompt,
+          true,
+          normalizedFolder,
+          newSettings.outputFormat,
+          newSettings.background,
+          newSettings.imageSize
+        );
+      }
       
       // If we generated preview only (not using unified), we can analyze before saving
       if (!newSettings.saveImages && newSettings.brandProtectionModel === "GPT-4o") {
@@ -315,7 +328,6 @@ export function ImageCreationContainer({ className = "", onImagesSaved }: ImageC
   const handleSaveImages = async (
     generationResponse: GenerationResponse, 
     prompt: string, 
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     _shouldAnalyze: boolean = false, 
     folder: string = "",
     outputFormat: string = "png",

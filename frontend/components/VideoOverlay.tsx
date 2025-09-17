@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import Image from "next/image";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { X, ArrowUp, Settings, Eye, Loader2, Wand2, RectangleHorizontal, Square, RectangleVertical, SignalLow, SignalMedium, SignalHigh, Timer, Copy, FolderTree, Plus, RefreshCw, PlusCircle } from "lucide-react";
@@ -153,7 +154,7 @@ export function VideoOverlay({
     if (sourceImages.length > 0 && variants !== "1") {
       setVariants("1");
     }
-  }, [sourceImages.length]);
+  }, [sourceImages.length, variants]);
 
   // Update folder when selectedFolder prop changes
   useEffect(() => {
@@ -450,16 +451,21 @@ export function VideoOverlay({
               <div className="flex flex-wrap gap-2 items-center">
                 {sourceImages.map((img, index) => (
                   <div key={index} className="relative">
-                    <img 
-                      src={URL.createObjectURL(img)} 
-                      alt={`Video Source ${index + 1}`} 
-                      className={cn(
-                        "w-12 h-12 object-cover rounded-md border transition-all duration-200",
-                        index === 0 && sourceImages.length > 1 
-                          ? "border-purple-300 ring-2 ring-purple-300/50 shadow-lg shadow-purple-300/25" 
-                          : "border-gray-500/30"
-                      )}
-                    />
+                    <div className="relative h-12 w-12">
+                      <Image 
+                        src={URL.createObjectURL(img)} 
+                        alt={`Video Source ${index + 1}`} 
+                        fill
+                        className={cn(
+                          "rounded-md border object-cover transition-all duration-200",
+                          index === 0 && sourceImages.length > 1 
+                            ? "border-purple-300 ring-2 ring-purple-300/50 shadow-lg shadow-purple-300/25" 
+                            : "border-gray-500/30"
+                        )}
+                        sizes="48px"
+                        unoptimized
+                      />
+                    </div>
                     
                     {/* Primary image indicator - purple theme for video */}
                     {index === 0 && sourceImages.length > 1 && (

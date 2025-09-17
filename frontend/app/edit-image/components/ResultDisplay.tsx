@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
+import Image from 'next/image';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { DownloadIcon, SaveIcon, ImageIcon, FolderTree, Plus, Check, RefreshCw, Loader2, ArrowRightIcon } from 'lucide-react';
@@ -47,6 +48,7 @@ export default function ResultDisplay({
   const [isCreatingFolderLoading, setIsCreatingFolderLoading] = useState(false);
   const [isRefreshingFolders, setIsRefreshingFolders] = useState(false);
   const newFolderInputRef = React.useRef<HTMLInputElement>(null);
+  const aspectRatio = originalImage.height ? originalImage.width / originalImage.height : 1;
 
   // Fetch available folders when component mounts
   useEffect(() => {
@@ -179,11 +181,16 @@ export default function ResultDisplay({
         <TabsContent value="result" className="mt-0">
           <Card className="p-6 flex flex-col items-center justify-center border-0 shadow-none">
             <div className="w-full max-w-2xl">
-              <img 
-                src={resultData.imageUrl} 
-                alt="Generated result" 
-                className="w-full h-auto object-contain rounded-lg shadow-md"
-              />
+              <div className="relative w-full" style={{ aspectRatio }}>
+                <Image 
+                  src={resultData.imageUrl}
+                  alt="Generated result"
+                  fill
+                  className="object-contain rounded-lg shadow-md"
+                  sizes="(max-width: 768px) 100vw, 50vw"
+                  unoptimized
+                />
+              </div>
             </div>
 
             <div className="w-full max-w-2xl mt-4 space-y-2">
@@ -205,11 +212,16 @@ export default function ResultDisplay({
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 relative">
             <Card className="p-4 flex flex-col items-center border-0 shadow-none">
               <div className="relative w-full flex items-center justify-center bg-muted/30 rounded-lg overflow-hidden p-2">
-                <img 
-                  src={originalImage.url} 
-                  alt="Original" 
-                  className="max-w-full max-h-full object-contain rounded-lg"
-                />
+                <div className="relative w-full" style={{ aspectRatio }}>
+                  <Image 
+                    src={originalImage.url}
+                    alt="Original"
+                    fill
+                    className="object-contain rounded-lg"
+                    sizes="(max-width: 768px) 100vw, 40vw"
+                    unoptimized
+                  />
+                </div>
               </div>
             </Card>
 
@@ -222,11 +234,16 @@ export default function ResultDisplay({
 
             <Card className="p-4 flex flex-col items-center border-0 shadow-none">
               <div className="relative w-full flex items-center justify-center bg-muted/30 rounded-lg overflow-hidden p-2">
-                <img 
-                  src={resultData.imageUrl} 
-                  alt="Generated" 
-                  className="max-w-full max-h-full object-contain rounded-lg"
-                />
+                <div className="relative w-full" style={{ aspectRatio }}>
+                  <Image 
+                    src={resultData.imageUrl}
+                    alt="Generated"
+                    fill
+                    className="object-contain rounded-lg"
+                    sizes="(max-width: 768px) 100vw, 40vw"
+                    unoptimized
+                  />
+                </div>
               </div>
             </Card>
           </div>

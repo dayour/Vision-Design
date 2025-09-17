@@ -121,35 +121,93 @@ export async function fetchVideos(
  */
 async function mapGalleryItemToImageMetadata(item: GalleryItem): Promise<ImageMetadata> {
   try {
+    const normalizeToString = (value: unknown): string => {
+      if (typeof value === 'string') return value;
+      if (Array.isArray(value)) {
+        return value
+          .map((entry) => {
+            if (typeof entry === 'string') return entry;
+            if (entry && typeof entry === 'object') {
+              const objectValues = Object.values(entry as Record<string, unknown>)
+                .filter((val) => typeof val === 'string' && val.trim().length > 0) as string[];
+              if (objectValues.length > 0) {
+                return objectValues.join(' ');
+              }
+            }
+            return entry != null ? String(entry) : '';
+          })
+          .filter((entry) => entry && entry.trim().length > 0)
+          .join(', ');
+      }
+      if (value && typeof value === 'object') {
+        const objectValues = Object.values(value as Record<string, unknown>)
+          .filter((val) => typeof val === 'string' && val.trim().length > 0) as string[];
+        if (objectValues.length > 0) {
+          return objectValues.join(', ');
+        }
+      }
+      return value != null ? String(value) : '';
+    };
+
+    const normalizeTags = (value: unknown): string[] => {
+      if (Array.isArray(value)) {
+        return value
+          .map((tag) => {
+            if (typeof tag === 'string') {
+              return tag.trim();
+            }
+            if (tag && typeof tag === 'object') {
+              const possibleName =
+                (tag as Record<string, unknown>).name ??
+                (tag as Record<string, unknown>).label ??
+                (tag as Record<string, unknown>).title;
+              if (typeof possibleName === 'string') {
+                return possibleName.trim();
+              }
+              return normalizeToString(tag);
+            }
+            return '';
+          })
+          .filter((tag) => tag.length > 0);
+      }
+
+      if (typeof value === 'string') {
+        return value
+          .split(/[,;]+/)
+          .map((tag) => tag.trim())
+          .filter((tag) => tag.length > 0);
+      }
+
+      return [];
+    };
+
     // Extract title from prompt (preferred) or name
     const title = item.metadata?.prompt || item.name.split('.')[0].replace(/_/g, ' ');
-    
-    // Extract description from CosmosDB metadata
-    const description = item.metadata?.analysis?.summary || item.metadata?.description || '';
-    
+
+    // Extract description from CosmosDB metadata, falling back to prompt-derived text
+    const descriptionSource = item.metadata?.analysis?.summary ?? item.metadata?.description ?? '';
+    const description = normalizeToString(descriptionSource);
+
     // Use direct SAS token URL (false for images, true for videos)
     const src = await sasTokenService.getBlobUrl(item.name, false);
     console.log(`Using direct blob URL for ${item.name}`);
-    
+
     // Extract tags from CosmosDB analysis structure
-    let tags: string[] = [];
-    if (item.metadata?.analysis?.tags && Array.isArray(item.metadata.analysis.tags)) {
-      tags = item.metadata.analysis.tags;
-    }
-    
+    const tags = normalizeTags(item.metadata?.analysis?.tags ?? item.metadata?.tags);
+
     // Extract analysis results from CosmosDB nested structure
     let analysis: ImageMetadata['analysis'] = undefined;
     if (item.metadata?.analysis) {
       const analysisData = item.metadata.analysis;
       analysis = {
-        summary: analysisData.summary as string,
-        products: analysisData.products as string,
-        feedback: analysisData.feedback as string,
-        tags: Array.isArray(analysisData.tags) ? analysisData.tags : tags,
-        analyzed: item.metadata.has_analysis === true,
+        summary: normalizeToString(analysisData.summary),
+        products: normalizeToString(analysisData.products),
+        feedback: normalizeToString(analysisData.feedback),
+        tags: normalizeTags(analysisData.tags),
+        analyzed: item.metadata.has_analysis === true || analysisData.analyzed === true,
       };
     }
-    
+
     return {
       id: item.id,
       name: item.name,
