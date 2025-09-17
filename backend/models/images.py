@@ -1,5 +1,6 @@
 from pydantic import BaseModel, Field, HttpUrl
-from typing import List, Optional, Dict, Any, Union
+from typing import List, Optional, Dict, Any, Union, Literal
+from enum import Enum
 from backend.models.common import BaseResponse
 from pydantic import validator
 
@@ -164,6 +165,10 @@ class ImageSaveRequest(BaseModel):
     analyze: bool = Field(
         False, description="Whether to analyze images after saving and store analysis results"
     )
+    metadata: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Additional metadata to persist alongside the saved image records",
+    )
 
 
 class ImageSaveResponse(BaseResponse):
@@ -327,3 +332,127 @@ class ImageFilenameGenerateRequest(BaseModel):
 class ImageFilenameGenerateResponse(BaseModel):
     """Response model for filename generation"""
     filename: str = Field(..., description="Generated filename")
+
+
+class PipelineAction(str, Enum):
+    """Supported primary operations for the image pipeline."""
+
+    GENERATE = "generate"
+    EDIT = "edit"
+
+
+class PipelineSaveOptions(BaseModel):
+    """Configuration for the optional persistence stage."""
+
+    enabled: bool = Field(False, description="Persist generated assets when true")
+    save_all: bool = Field(True, description="Persist every variant instead of the first")
+    folder_path: Optional[str] = Field(
+        None, description="Virtual folder path to store saved assets"
+    )
+    output_format: Optional[str] = Field(
+        None, description="Override output format at save time"
+    )
+    background: Optional[str] = Field(
+        None, description="Override background metadata for saved images"
+    )
+    metadata: Optional[Dict[str, Any]] = Field(
+        None, description="Additional metadata merged into Cosmos DB records"
+    )
+
+
+class PipelineAnalysisOptions(BaseModel):
+    """Configuration for downstream analysis."""
+
+    enabled: bool = Field(False, description="Run analysis after generation/save")
+    custom_prompt: Optional[str] = Field(
+        None,
+        description="Optional override for the analysis system instructions",
+    )
+
+
+class ImagePipelineRequest(BaseModel):
+    """Unified payload driving the image pipeline."""
+
+    action: PipelineAction = Field(
+        PipelineAction.GENERATE,
+        description="Primary pipeline action to execute",
+    )
+    prompt: str = Field(..., description="Prompt used for generation or editing")
+    model: str = Field(
+        "gpt-image-1", description="Model deployment identifier"
+    )
+    n: int = Field(1, description="Number of variants to produce (1-10)")
+    size: str = Field(
+        "auto",
+        description="Requested output size (1024x1024, 1536x1024, 1024x1536, or auto)",
+    )
+    response_format: str = Field(
+        "b64_json", description="Expected response format from the model"
+    )
+    quality: Optional[str] = Field(
+        "auto", description="Quality hint for gpt-image-1"
+    )
+    output_format: Optional[str] = Field(
+        "png", description="Desired output format"
+    )
+    output_compression: Optional[int] = Field(
+        100,
+        description="Compression percentage for webp/jpeg outputs (0-100)",
+    )
+    background: Optional[str] = Field(
+        "auto", description="Background handling (transparent, opaque, auto)"
+    )
+    moderation: Optional[str] = Field(
+        "auto", description="Moderation strictness passed to the model"
+    )
+    user: Optional[str] = Field(
+        None, description="End-user identifier forwarded to the provider"
+    )
+    input_fidelity: Optional[str] = Field(
+        "low", description="Input fidelity used for edit operations ('low' or 'high')"
+    )
+    source_image_urls: Optional[List[HttpUrl]] = Field(
+        None,
+        description="Existing image URLs to edit when uploads are not provided",
+    )
+    source_image_base64: Optional[List[str]] = Field(
+        None,
+        description="Base64 encoded source images (without the data URL prefix)",
+    )
+    mask_image_url: Optional[HttpUrl] = Field(
+        None, description="Optional mask image URL for edit operations"
+    )
+    save_options: PipelineSaveOptions = Field(
+        default_factory=PipelineSaveOptions,
+        description="Save configuration",
+    )
+    analysis_options: PipelineAnalysisOptions = Field(
+        default_factory=PipelineAnalysisOptions,
+        description="Analysis configuration",
+    )
+    metadata: Optional[Dict[str, Any]] = Field(
+        None, description="Arbitrary metadata forwarded through the pipeline"
+    )
+
+
+class PipelineStepResult(BaseModel):
+    """Describes the outcome of a single pipeline stage."""
+
+    step: Literal["generate", "edit", "save", "analyze"]
+    success: bool
+    message: Optional[str] = None
+    details: Optional[Dict[str, Any]] = None
+
+
+class ImagePipelineResponse(BaseResponse):
+    """Aggregated response returned by the unified pipeline endpoint."""
+
+    steps: List[PipelineStepResult] = Field(
+        ..., description="Ordered pipeline step summaries"
+    )
+    generation: Optional[ImageGenerationResponse] = Field(
+        None, description="Generation/edit stage response payload"
+    )
+    save: Optional[ImageSaveResponse] = Field(
+        None, description="Save stage response when executed"
+    )

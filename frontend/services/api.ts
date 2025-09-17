@@ -35,6 +35,7 @@ console.log(`- NEXT_PUBLIC_API_PORT: ${process.env.NEXT_PUBLIC_API_PORT || 'not 
 
 // Enable debug mode to log API requests
 const DEBUG = process.env.NEXT_PUBLIC_DEBUG_MODE === 'true';
+const DEBUG = process.env.NEXT_PUBLIC_DEBUG_MODE === 'true';
 
 // Types for API requests and responses
 export interface VideoGenerationRequest {
@@ -44,6 +45,11 @@ export interface VideoGenerationRequest {
   height: number;
   width: number;
   metadata?: Record<string, string>;
+  // NEW: Optional source images for image+text to video
+  sourceImages?: File[];
+  // Optional direct fields for form usage
+  folder_path?: string;
+  analyze_video?: boolean;
   // NEW: Optional source images for image+text to video
   sourceImages?: File[];
   // Optional direct fields for form usage
@@ -147,7 +153,34 @@ export interface TokenUsage {
   input_tokens_details?: InputTokensDetails;
 }
 
+export interface InputTokensDetails {
+  text_tokens?: number;
+  image_tokens?: number;
+}
+
+export interface TokenUsage {
+  total_tokens: number;
+  input_tokens: number;
+  output_tokens: number;
+  input_tokens_details?: InputTokensDetails;
+}
+
 export interface ImageGenerationResponse {
+  success: boolean;
+  message?: string;
+  error?: string;
+  imgen_model_response?: {
+    created?: number;
+    data?: Array<{
+      url?: string;
+      b64_json?: string;
+      revised_prompt?: string;
+      [key: string]: unknown;
+    }>;
+    [key: string]: unknown;
+  };
+  token_usage?: TokenUsage;
+  [key: string]: unknown;
   success: boolean;
   message?: string;
   error?: string;
@@ -193,6 +226,64 @@ export interface ImageSaveResponse {
   analyzed: boolean;
 }
 
+export type PipelineStep = 'generate' | 'edit' | 'save' | 'analyze';
+
+export interface PipelineStepResult {
+  step: PipelineStep;
+  success: boolean;
+  message?: string;
+  details?: Record<string, unknown>;
+}
+
+export interface PipelineSaveOptions {
+  enabled: boolean;
+  save_all?: boolean;
+  folder_path?: string;
+  output_format?: string;
+  background?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface PipelineAnalysisOptions {
+  enabled: boolean;
+  custom_prompt?: string;
+}
+
+export enum PipelineAction {
+  GENERATE = 'generate',
+  EDIT = 'edit',
+}
+
+export interface ImagePipelineRequest {
+  action: PipelineAction;
+  prompt: string;
+  model?: string;
+  n?: number;
+  size?: string;
+  response_format?: string;
+  quality?: string;
+  output_format?: string;
+  output_compression?: number;
+  background?: string;
+  moderation?: string;
+  user?: string;
+  input_fidelity?: string;
+  source_image_urls?: string[];
+  source_image_base64?: string[];
+  mask_image_url?: string;
+  save_options: PipelineSaveOptions;
+  analysis_options: PipelineAnalysisOptions;
+  metadata?: Record<string, unknown>;
+}
+
+export interface ImagePipelineResponse {
+  success: boolean;
+  message: string;
+  steps: PipelineStepResult[];
+  generation?: ImageGenerationResponse;
+  save?: ImageSaveResponse;
+}
+
 /**
  * Interface for metadata update response
  */
@@ -210,18 +301,6 @@ export interface FolderHierarchy {
     path: string;
     children: FolderHierarchy;
   };
-}
-
-/**
- * Interface for image edit response
- */
-export interface ImageEditResponse {
-  created: number;
-  data: Array<{
-    url?: string;
-    b64_json?: string;
-    revised_prompt?: string;
-  }>;
 }
 
 /**
@@ -265,8 +344,38 @@ export async function createVideoGenerationJob(request: VideoGenerationRequest):
     }
   }
 
+  // Always use multipart form data to match backend's Form/File signature
+  const formData = new FormData();
+  formData.append('prompt', request.prompt);
+  formData.append('n_variants', String(request.n_variants));
+  formData.append('n_seconds', String(request.n_seconds));
+  formData.append('height', String(request.height));
+  formData.append('width', String(request.width));
+
+  // Derive folder_path from either explicit field or metadata.folder
+  const folderPath = request.folder_path || request.metadata?.folder;
+  if (folderPath) {
+    formData.append('folder_path', folderPath);
+  }
+
+  // Derive analyze_video from explicit field or metadata.analyzeVideo
+  const analyze = typeof request.analyze_video === 'boolean'
+    ? request.analyze_video
+    : (typeof request.metadata?.analyzeVideo === 'string' ? request.metadata?.analyzeVideo === 'true' : undefined);
+  if (typeof analyze === 'boolean') {
+    formData.append('analyze_video', String(analyze));
+  }
+
+  // Append images if provided
+  if (request.sourceImages && request.sourceImages.length > 0) {
+    for (const file of request.sourceImages) {
+      formData.append('images', file, file.name);
+    }
+  }
+
   const response = await fetch(url, {
     method: 'POST',
+    body: formData,
     body: formData,
   });
 
@@ -821,6 +930,8 @@ export interface VideoGenerationWithAnalysisRequest {
   metadata?: Record<string, string>;
   // NEW: Optional source images for image+text
   sourceImages?: File[];
+  // NEW: Optional source images for image+text
+  sourceImages?: File[];
 }
 
 export interface VideoGenerationWithAnalysisResponse {
@@ -1033,6 +1144,58 @@ export async function enhanceImagePrompt(prompt: string): Promise<string> {
 /**
  * Generate images using DALL-E
  */
+export async function runImagePipeline(
+  request: ImagePipelineRequest,
+  files?: {
+    sourceImages?: File[];
+    mask?: File | null;
+  }
+): Promise<ImagePipelineResponse> {
+  const url = `${API_BASE_URL}/images/pipeline`;
+
+  if (DEBUG) {
+    console.log('Running image pipeline with payload:', request);
+    console.log(`POST ${url}`);
+  }
+
+  const formData = new FormData();
+  formData.append('payload', JSON.stringify(request));
+
+  if (files?.sourceImages) {
+    files.sourceImages.forEach((file) => {
+      formData.append('source_images', file);
+    });
+  }
+
+  if (files?.mask) {
+    formData.append('mask', files.mask);
+  }
+
+  const response = await fetch(url, {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (DEBUG) {
+    console.log(`Response status: ${response.status} ${response.statusText}`);
+    if (!response.ok) {
+      console.error('Error response:', await response.text().catch(() => 'Could not read response text'));
+    }
+  }
+
+  if (!response.ok) {
+    throw new Error(`Failed to run image pipeline: ${response.status} ${response.statusText}`);
+  }
+
+  const data: ImagePipelineResponse = await response.json();
+
+  if (DEBUG) {
+    console.log('Pipeline response data:', data);
+  }
+
+  return data;
+}
+
 export async function generateImages(
   prompt: string, 
   n: number = 1,
@@ -1042,52 +1205,32 @@ export async function generateImages(
   outputFormat: string = "png",
   quality: string = "auto"
 ): Promise<ImageGenerationResponse> {
-  const url = `${API_BASE_URL}/images/generate`;
-  
-  if (DEBUG) {
-    console.log(`Generating images with prompt: ${prompt}`);
-    console.log(`POST ${url}`);
-  }
-  
-  const payload = {
+  const pipelineRequest: ImagePipelineRequest = {
+    action: PipelineAction.GENERATE,
     prompt,
+    model: 'gpt-image-1',
     n,
     size,
     response_format,
     background,
     output_format: outputFormat,
-    quality
+    quality,
+    save_options: {
+      enabled: false,
+    },
+    analysis_options: {
+      enabled: false,
+    },
   };
-  
+
   try {
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(payload),
-    });
-
-    if (DEBUG) {
-      console.log(`Response status: ${response.status} ${response.statusText}`);
-      if (!response.ok) {
-        console.error('Error response:', await response.text().catch(() => 'Could not read response text'));
-      }
+    const pipelineResponse = await runImagePipeline(pipelineRequest);
+    if (!pipelineResponse.generation) {
+      throw new Error('Pipeline response did not include generation data');
     }
-
-    if (!response.ok) {
-      throw new Error(`Failed to generate images: ${response.status} ${response.statusText}`);
-    }
-
-    const data = await response.json();
-    
-    if (DEBUG) {
-      console.log('Generated images response data:', data);
-    }
-    
-    return data;
+    return pipelineResponse.generation;
   } catch (error) {
-    console.error('Error generating images:', error);
+    console.error('Error generating images via pipeline:', error);
     throw error;
   }
 }
@@ -1161,6 +1304,7 @@ export async function saveGeneratedImages(
 /**
  * Unified image generation + analysis + saving
  */
+
 export async function generateImagesWithAnalysis(params: {
   prompt: string;
   n?: number;
@@ -1176,53 +1320,42 @@ export async function generateImagesWithAnalysis(params: {
   model?: string;
   analyze?: boolean;
 }): Promise<ImageSaveResponse> {
-  const url = `${API_BASE_URL}/images/generate-with-analysis`;
-
-  const body = {
+  const pipelineRequest: ImagePipelineRequest = {
+    action: PipelineAction.GENERATE,
     prompt: params.prompt,
     model: params.model || 'gpt-image-1',
     n: params.n ?? 1,
     size: params.size || 'auto',
+    response_format: 'b64_json',
     quality: params.quality || 'auto',
     output_format: params.output_format || 'png',
-    output_compression: params.output_compression ?? 100,
+    output_compression: params.output_compression,
     background: params.background || 'auto',
     moderation: params.moderation || 'auto',
     user: params.user,
-    save_all: params.save_all ?? true,
-    folder_path: params.folder_path || '',
-    analyze: params.analyze ?? true,
+    save_options: {
+      enabled: true,
+      save_all: params.save_all ?? true,
+      folder_path: params.folder_path || '',
+      output_format: params.output_format,
+      background: params.background,
+    },
+    analysis_options: {
+      enabled: params.analyze ?? true,
+    },
   };
 
   if (DEBUG) {
-    console.log('Generating images with analysis (unified)');
-    console.log('POST', url);
-    console.log('Payload:', body);
+    console.log('Generating images with analysis via pipeline');
+    console.log('Payload:', pipelineRequest);
   }
 
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
-  });
-
-  if (DEBUG) {
-    console.log(`Response status: ${response.status} ${response.statusText}`);
-    if (!response.ok) {
-      console.error('Error response:', await response.text().catch(() => 'Could not read response text'));
-    }
+  const pipelineResponse = await runImagePipeline(pipelineRequest);
+  if (!pipelineResponse.save) {
+    throw new Error('Pipeline response did not include save data');
   }
-
-  if (!response.ok) {
-    throw new Error(`Failed to generate/analyze/save images: ${response.status} ${response.statusText}`);
-  }
-
-  const data = await response.json();
-  return data;
+  return pipelineResponse.save;
 }
-
 /**
  * Interface for image analysis response
  */
@@ -1551,65 +1684,46 @@ export async function editImage(
   size: string = "auto",
   quality: string = "auto",
   inputFidelity: string = "low"
-): Promise<ImageEditResponse> {
-  // Validate input_fidelity parameter
+): Promise<ImageGenerationResponse> {
   if (inputFidelity && !["low", "high"].includes(inputFidelity)) {
     throw new Error("input_fidelity must be either 'low' or 'high'");
   }
 
-  const url = `${API_BASE_URL}/images/edit/upload`;
-  
+  const filesArray = Array.isArray(sourceImages) ? sourceImages : [sourceImages];
+
   if (DEBUG) {
-    const imageCount = Array.isArray(sourceImages) ? sourceImages.length : 1;
-    console.log(`Editing ${imageCount} image(s) with prompt: ${prompt}, input_fidelity: ${inputFidelity}`);
-    console.log(`POST ${url}`);
+    console.log(`Editing ${filesArray.length} image(s) with prompt: ${prompt}, input_fidelity: ${inputFidelity}`);
   }
-  
-  // Create a FormData object to send the file and parameters
-  const formData = new FormData();
-  
-  // Handle single image or multiple images
-  if (Array.isArray(sourceImages)) {
-    sourceImages.forEach((img) => {
-      formData.append('image', img);
-    });
-  } else {
-    formData.append('image', sourceImages);
-  }
-  
-  formData.append('prompt', prompt);
-  formData.append('n', n.toString());
-  formData.append('size', size);
-  formData.append('model', 'gpt-image-1');
-  formData.append('quality', quality);
-  formData.append('input_fidelity', inputFidelity);
-  
+
+  const pipelineRequest: ImagePipelineRequest = {
+    action: PipelineAction.EDIT,
+    prompt,
+    model: 'gpt-image-1',
+    n,
+    size,
+    response_format: 'b64_json',
+    quality,
+    input_fidelity: inputFidelity,
+    save_options: {
+      enabled: false,
+    },
+    analysis_options: {
+      enabled: false,
+    },
+  };
+
   try {
-    const response = await fetch(url, {
-      method: 'POST',
-      body: formData,
+    const pipelineResponse = await runImagePipeline(pipelineRequest, {
+      sourceImages: filesArray,
     });
 
-    if (DEBUG) {
-      console.log(`Response status: ${response.status} ${response.statusText}`);
-      if (!response.ok) {
-        console.error('Error response:', await response.text().catch(() => 'Could not read response text'));
-      }
+    if (!pipelineResponse.generation) {
+      throw new Error('Pipeline response did not include generation data');
     }
 
-    if (!response.ok) {
-      throw new Error(`Failed to edit image: ${response.status} ${response.statusText}`);
-    }
-
-    const data = await response.json();
-    
-    if (DEBUG) {
-      console.log('Edited image response data:', data);
-    }
-    
-    return data;
+    return pipelineResponse.generation;
   } catch (error) {
-    console.error('Error editing image:', error);
+    console.error('Error editing image via pipeline:', error);
     throw error;
   }
 }
@@ -1887,6 +2001,11 @@ export async function createVideoGenerationWithAnalysis(request: VideoGeneration
     return await createVideoGenerationWithAnalysisMultipart(request);
   }
 
+  // If images are present, prefer the multipart unified endpoint
+  if (request.sourceImages && request.sourceImages.length > 0) {
+    return await createVideoGenerationWithAnalysisMultipart(request);
+  }
+
   const response = await fetch(url, {
     method: 'POST',
     headers: {
@@ -1912,6 +2031,62 @@ export async function createVideoGenerationWithAnalysis(request: VideoGeneration
     console.log('Response data:', data);
   }
   
+  return data;
+}
+
+/**
+ * Unified multipart variant that supports optional images
+ */
+export async function createVideoGenerationWithAnalysisMultipart(request: VideoGenerationWithAnalysisRequest): Promise<VideoGenerationWithAnalysisResponse> {
+  const url = `${API_BASE_URL}/videos/generate-with-analysis/upload`;
+
+  if (DEBUG) {
+    console.log(`Creating video (multipart) with analysis: ${request.prompt}`);
+    console.log(`POST ${url}`);
+  }
+
+  const formData = new FormData();
+  formData.append('prompt', request.prompt);
+  formData.append('n_variants', String(request.n_variants));
+  formData.append('n_seconds', String(request.n_seconds));
+  formData.append('height', String(request.height));
+  formData.append('width', String(request.width));
+  formData.append('analyze_video', String(request.analyze_video));
+
+  // Provide folder via dedicated field for backend convenience
+  const folderFromMeta = request.metadata?.folder;
+  if (folderFromMeta) {
+    formData.append('folder_path', folderFromMeta);
+  }
+
+  // Include metadata JSON if present
+  if (request.metadata) {
+    formData.append('metadata', JSON.stringify(request.metadata));
+  }
+
+  if (request.sourceImages && request.sourceImages.length > 0) {
+    for (const file of request.sourceImages) {
+      formData.append('images', file, file.name);
+    }
+  }
+
+  const response = await fetch(url, {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (DEBUG) {
+    console.log(`Response status: ${response.status} ${response.statusText}`);
+    if (!response.ok) {
+      console.error('Error response:', await response.text().catch(() => 'Could not read response text'));
+    }
+  }
+
+  if (!response.ok) {
+    throw new Error(`Failed to create video generation with analysis (multipart): ${response.status} ${response.statusText}`);
+  }
+
+  const data = await response.json();
   return data;
 }
 
@@ -2023,3 +2198,4 @@ export async function analyzeAndUpdateVideoMetadata(videoName: string): Promise<
     throw error;
   }
 } 
+
