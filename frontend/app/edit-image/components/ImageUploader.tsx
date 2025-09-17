@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useRef, useCallback } from 'react';
+import Image from 'next/image';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -157,12 +158,17 @@ export default function ImageUploader({ onImageUpload }: ImageUploaderProps) {
           )}
           
           {previewUrl && !isLoading ? (
-            <div className="relative">
-              <img 
-                src={previewUrl} 
-                alt="Preview" 
-                className="max-h-64 max-w-full object-contain rounded-md shadow-md" 
-              />
+            <div className="relative max-h-64 max-w-full">
+              <div className="relative h-64 w-full">
+                <Image 
+                  src={previewUrl} 
+                  alt="Preview" 
+                  fill
+                  className="object-contain rounded-md shadow-md"
+                  sizes="(max-width: 768px) 100vw, 50vw"
+                  unoptimized
+                />
+              </div>
               <Button
                 variant="outline"
                 size="icon"

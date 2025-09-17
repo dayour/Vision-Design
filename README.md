@@ -104,8 +104,67 @@ npm install --legacy-peer-deps
    | **GPT-Image-1**   | - `IMAGEGEN_AOAI_RESOURCE`: name of the Azure OpenAI resource used for gpt-image-1 <br> - `IMAGEGEN_DEPLOYMENT`: deployment name for the gpt-image-1 model <br> - `IMAGEGEN_AOAI_API_KEY`: API key for the gpt-image-1 resource                                                                                                                                                |
    | **GPT-4.1**       | - `LLM_AOAI_RESOURCE`: name of the Azure OpenAI resource used for GPT-4.1 <br> - `LLM_DEPLOYMENT`: deployment name for the GPT-4.1 model <br> - `LLM_AOAI_API_KEY`: API key for the GPT-4.1 resource                                                                                                                                                                           |
    | **Azure Storage** | - `AZURE_BLOB_SERVICE_URL`: URL to your Azure Blob Storage service <br> - `AZURE_STORAGE_ACCOUNT_NAME`: name of your Azure Storage Account <br> - `AZURE_STORAGE_ACCOUNT_KEY`: access key for your Azure Storage Account <br> - `AZURE_BLOB_IMAGE_CONTAINER`: name of the Blob Container for images <br> - `AZURE_BLOB_VIDEO_CONTAINER`: name of the Blob Container for videos |
+   | **Azure Cosmos DB** | - `AZURE_COSMOS_DB_ENDPOINT`: URL to your Azure Cosmos DB account (e.g., `https://your-account.documents.azure.com:443/`) <br> - `AZURE_COSMOS_DB_KEY`: Primary or secondary key for your Cosmos DB account <br> - `AZURE_COSMOS_DB_ID`: Database name (default: `visionarylab`) <br> - `AZURE_COSMOS_CONTAINER_ID`: Container name for metadata (default: `metadata`) <br> - `USE_MANAGED_IDENTITY`: Set to `false` for key-based auth or `true` for managed identity (default: `true`) |
 
 > Note: For the best experience, use both Sora and GPT-Image-1. However, the app also works if you use only one of these models.
+
+### Setting Up Azure Cosmos DB
+
+Azure Cosmos DB is used to store metadata for your generated images and videos, enabling advanced features like:
+- Asset organization and tagging
+- Search and filtering capabilities  
+- Analysis results storage
+- Gallery management
+
+#### Option 1: Using Managed Identity (Recommended for Azure deployments)
+
+When deploying to Azure Container Apps or other Azure services, managed identity provides the most secure authentication method:
+
+1. **Set environment variables:**
+   ```bash
+   USE_MANAGED_IDENTITY=true
+   AZURE_COSMOS_DB_ENDPOINT=https://your-cosmos-account.documents.azure.com:443/
+   AZURE_COSMOS_DB_ID=visionarylab
+   AZURE_COSMOS_CONTAINER_ID=metadata
+   ```
+
+2. **Configure managed identity access:**
+   - In the Azure portal, go to your Cosmos DB account
+   - Navigate to **Access control (IAM)**
+   - Add role assignment: **Cosmos DB Built-in Data Contributor** to your managed identity
+
+#### Option 2: Using Access Keys (For local development)
+
+For local development or when managed identity isn't available:
+
+1. **Get your Cosmos DB connection details:**
+   - In the Azure portal, go to your Cosmos DB account
+   - Navigate to **Keys** under Settings
+   - Copy the **URI** and **Primary Key**
+
+2. **Set environment variables:**
+   ```bash
+   USE_MANAGED_IDENTITY=false
+   AZURE_COSMOS_DB_ENDPOINT=https://your-cosmos-account.documents.azure.com:443/
+   AZURE_COSMOS_DB_KEY=your-primary-key-here
+   AZURE_COSMOS_DB_ID=visionarylab
+   AZURE_COSMOS_CONTAINER_ID=metadata
+   ```
+
+#### Creating the Database and Container
+
+The application will automatically create the database and container if they don't exist. However, you can create them manually:
+
+1. **Create Database:**
+   - Database ID: `visionarylab` (or your custom name)
+   - Throughput: Shared (400 RU/s minimum)
+
+2. **Create Container:**
+   - Container ID: `metadata` (or your custom name)
+   - Partition key: `/media_type`
+   - Throughput: Use database shared throughput
+
+> **Note:** Cosmos DB is **required** for the gallery and asset management features to work properly.
 
 ## Step 3: Running the Application
 

@@ -448,6 +448,9 @@ function NewVideoPageContent() {
     imageCache: boolean;
     folder?: string;
     brandsList?: string[];
+    // NEW: Image-to-Video
+    sourceImages?: File[];
+    hasSourceImages?: boolean;
   }) => {
     // Skip if already generating
     if (isGenerating) return;
@@ -494,7 +497,9 @@ function NewVideoPageContent() {
             brandsProtection: settings.brandsProtection,
             brandsList: settings.brandsList,
             analyzeVideo: settings.analyzeVideo, // Pass the analysis setting
-            folder: settings.folder // Pass the folder setting
+            folder: settings.folder, // Pass the folder setting
+            // NEW: Pass source images through to the queue context
+            sourceImages: settings.sourceImages
           };
           
           // Add to queue - this will create the job in the backend

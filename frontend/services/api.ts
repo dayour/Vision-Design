@@ -34,7 +34,7 @@ console.log(`- NEXT_PUBLIC_API_HOSTNAME: ${process.env.NEXT_PUBLIC_API_HOSTNAME 
 console.log(`- NEXT_PUBLIC_API_PORT: ${process.env.NEXT_PUBLIC_API_PORT || 'not set'}`);
 
 // Enable debug mode to log API requests
-const DEBUG = process.env.NEXT_PUBLIC_DEBUG_MODE === 'true' || true;
+const DEBUG = process.env.NEXT_PUBLIC_DEBUG_MODE === 'true';
 
 // Types for API requests and responses
 export interface VideoGenerationRequest {
@@ -44,6 +44,11 @@ export interface VideoGenerationRequest {
   height: number;
   width: number;
   metadata?: Record<string, string>;
+  // NEW: Optional source images for image+text to video
+  sourceImages?: File[];
+  // Optional direct fields for form usage
+  folder_path?: string;
+  analyze_video?: boolean;
 }
 
 export interface VideoGenerationJob {
@@ -130,13 +135,34 @@ export interface AssetMetadata {
 /**
  * Interface for image generation response
  */
+export interface InputTokensDetails {
+  text_tokens?: number;
+  image_tokens?: number;
+}
+
+export interface TokenUsage {
+  total_tokens: number;
+  input_tokens: number;
+  output_tokens: number;
+  input_tokens_details?: InputTokensDetails;
+}
+
 export interface ImageGenerationResponse {
-  created: number;
-  data: Array<{
-    url?: string;
-    b64_json?: string;
-    revised_prompt?: string;
-  }>;
+  success: boolean;
+  message?: string;
+  error?: string;
+  imgen_model_response?: {
+    created?: number;
+    data?: Array<{
+      url?: string;
+      b64_json?: string;
+      revised_prompt?: string;
+      [key: string]: unknown;
+    }>;
+    [key: string]: unknown;
+  };
+  token_usage?: TokenUsage;
+  [key: string]: unknown;
 }
 
 /**
@@ -210,18 +236,38 @@ export async function createVideoGenerationJob(request: VideoGenerationRequest):
     console.log('Request:', request);
   }
 
-  // Include metadata if present
-  const requestBody = {
-    ...request,
-    metadata: request.metadata || undefined
-  };
-  
+  // Always use multipart form data to match backend's Form/File signature
+  const formData = new FormData();
+  formData.append('prompt', request.prompt);
+  formData.append('n_variants', String(request.n_variants));
+  formData.append('n_seconds', String(request.n_seconds));
+  formData.append('height', String(request.height));
+  formData.append('width', String(request.width));
+
+  // Derive folder_path from either explicit field or metadata.folder
+  const folderPath = request.folder_path || request.metadata?.folder;
+  if (folderPath) {
+    formData.append('folder_path', folderPath);
+  }
+
+  // Derive analyze_video from explicit field or metadata.analyzeVideo
+  const analyze = typeof request.analyze_video === 'boolean'
+    ? request.analyze_video
+    : (typeof request.metadata?.analyzeVideo === 'string' ? request.metadata?.analyzeVideo === 'true' : undefined);
+  if (typeof analyze === 'boolean') {
+    formData.append('analyze_video', String(analyze));
+  }
+
+  // Append images if provided
+  if (request.sourceImages && request.sourceImages.length > 0) {
+    for (const file of request.sourceImages) {
+      formData.append('images', file, file.name);
+    }
+  }
+
   const response = await fetch(url, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(requestBody),
+    body: formData,
   });
 
   if (DEBUG) {
@@ -773,6 +819,8 @@ export interface VideoGenerationWithAnalysisRequest {
   width: number;
   analyze_video: boolean;
   metadata?: Record<string, string>;
+  // NEW: Optional source images for image+text
+  sourceImages?: File[];
 }
 
 export interface VideoGenerationWithAnalysisResponse {
@@ -1108,6 +1156,71 @@ export async function saveGeneratedImages(
     console.error('Error saving images:', error);
     throw error;
   }
+}
+
+/**
+ * Unified image generation + analysis + saving
+ */
+export async function generateImagesWithAnalysis(params: {
+  prompt: string;
+  n?: number;
+  size?: string;
+  quality?: string;
+  output_format?: string;
+  output_compression?: number;
+  background?: string;
+  moderation?: string;
+  user?: string;
+  save_all?: boolean;
+  folder_path?: string;
+  model?: string;
+  analyze?: boolean;
+}): Promise<ImageSaveResponse> {
+  const url = `${API_BASE_URL}/images/generate-with-analysis`;
+
+  const body = {
+    prompt: params.prompt,
+    model: params.model || 'gpt-image-1',
+    n: params.n ?? 1,
+    size: params.size || 'auto',
+    quality: params.quality || 'auto',
+    output_format: params.output_format || 'png',
+    output_compression: params.output_compression ?? 100,
+    background: params.background || 'auto',
+    moderation: params.moderation || 'auto',
+    user: params.user,
+    save_all: params.save_all ?? true,
+    folder_path: params.folder_path || '',
+    analyze: params.analyze ?? true,
+  };
+
+  if (DEBUG) {
+    console.log('Generating images with analysis (unified)');
+    console.log('POST', url);
+    console.log('Payload:', body);
+  }
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (DEBUG) {
+    console.log(`Response status: ${response.status} ${response.statusText}`);
+    if (!response.ok) {
+      console.error('Error response:', await response.text().catch(() => 'Could not read response text'));
+    }
+  }
+
+  if (!response.ok) {
+    throw new Error(`Failed to generate/analyze/save images: ${response.status} ${response.statusText}`);
+  }
+
+  const data = await response.json();
+  return data;
 }
 
 /**
@@ -1502,6 +1615,109 @@ export async function editImage(
 }
 
 /**
+ * Analyze an image using a custom prompt
+ */
+interface CustomAnalysisRequestBody {
+  custom_prompt: string;
+  image_path?: string;
+  base64_image?: string;
+}
+
+export async function analyzeImageCustom(
+  imageUrl?: string,
+  base64Image?: string, 
+  customPrompt?: string,
+  retries = 3
+): Promise<ImageAnalysisResponse> {
+  const url = `${API_BASE_URL}/images/analyze-custom`;
+  
+  if (!customPrompt || !customPrompt.trim()) {
+    throw new Error("Custom prompt is required for custom analysis");
+  }
+  
+  if (DEBUG) {
+    console.log("Analyzing image with custom prompt:", customPrompt.substring(0, 100) + "...");
+    console.log(`POST ${url}`);
+  }
+  
+  let attempt = 0;
+  let lastError: Error | null = null;
+  
+  while (attempt < retries) {
+    try {
+      attempt++;
+      
+      if (attempt > 1) {
+        console.log(`Retry attempt ${attempt}/${retries} for custom image analysis`);
+      }
+      
+      // Add a timeout to prevent hanging requests
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 60000); // 60 second timeout
+      
+      const requestBody: CustomAnalysisRequestBody = {
+        custom_prompt: customPrompt
+      };
+      
+      if (imageUrl) {
+        requestBody.image_path = imageUrl;
+      } else if (base64Image) {
+        // Make sure the base64 string doesn't include the data URL prefix
+        const cleanBase64 = base64Image.replace(/^data:image\/[a-z]+;base64,/, "");
+        requestBody.base64_image = cleanBase64;
+      } else {
+        throw new Error("Either imageUrl or base64Image must be provided");
+      }
+      
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(requestBody),
+        signal: controller.signal
+      });
+      
+      // Clear the timeout
+      clearTimeout(timeoutId);
+      
+      if (DEBUG) {
+        console.log(`Response status: ${response.status} ${response.statusText}`);
+        if (!response.ok) {
+          console.error('Error response:', await response.text().catch(() => 'Could not read response text'));
+        }
+      }
+      
+      if (!response.ok) {
+        throw new Error(`Failed to analyze image: ${response.status} ${response.statusText}`);
+      }
+      
+      const data = await response.json();
+      
+      if (DEBUG) {
+        console.log('Custom analysis response data:', data);
+      }
+      
+      return data;
+    } catch (error) {
+      console.error(`Custom image analysis attempt ${attempt}/${retries} failed:`, error);
+      lastError = error instanceof Error ? error : new Error(String(error));
+      
+      // If it's the last attempt, throw the error
+      if (attempt >= retries) {
+        throw lastError;
+      }
+      
+      // Wait before retrying - increasing delay between retries
+      await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+    }
+  }
+  
+  // This should never happen due to the throw in the loop, but TypeScript requires a return
+  throw lastError || new Error("Custom image analysis failed after retries");
+}
+
+/**
  * Analyze an image using AI directly from base64 data
  */
 export async function analyzeImageFromBase64(base64Image: string, retries = 3): Promise<ImageAnalysisResponse> {
@@ -1666,6 +1882,11 @@ export async function createVideoGenerationWithAnalysis(request: VideoGeneration
     console.log('Request:', request);
   }
 
+  // If images are present, prefer the multipart unified endpoint
+  if (request.sourceImages && request.sourceImages.length > 0) {
+    return await createVideoGenerationWithAnalysisMultipart(request);
+  }
+
   const response = await fetch(url, {
     method: 'POST',
     headers: {
@@ -1691,6 +1912,62 @@ export async function createVideoGenerationWithAnalysis(request: VideoGeneration
     console.log('Response data:', data);
   }
   
+  return data;
+}
+
+/**
+ * Unified multipart variant that supports optional images
+ */
+export async function createVideoGenerationWithAnalysisMultipart(request: VideoGenerationWithAnalysisRequest): Promise<VideoGenerationWithAnalysisResponse> {
+  const url = `${API_BASE_URL}/videos/generate-with-analysis/upload`;
+
+  if (DEBUG) {
+    console.log(`Creating video (multipart) with analysis: ${request.prompt}`);
+    console.log(`POST ${url}`);
+  }
+
+  const formData = new FormData();
+  formData.append('prompt', request.prompt);
+  formData.append('n_variants', String(request.n_variants));
+  formData.append('n_seconds', String(request.n_seconds));
+  formData.append('height', String(request.height));
+  formData.append('width', String(request.width));
+  formData.append('analyze_video', String(request.analyze_video));
+
+  // Provide folder via dedicated field for backend convenience
+  const folderFromMeta = request.metadata?.folder;
+  if (folderFromMeta) {
+    formData.append('folder_path', folderFromMeta);
+  }
+
+  // Include metadata JSON if present
+  if (request.metadata) {
+    formData.append('metadata', JSON.stringify(request.metadata));
+  }
+
+  if (request.sourceImages && request.sourceImages.length > 0) {
+    for (const file of request.sourceImages) {
+      formData.append('images', file, file.name);
+    }
+  }
+
+  const response = await fetch(url, {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (DEBUG) {
+    console.log(`Response status: ${response.status} ${response.statusText}`);
+    if (!response.ok) {
+      console.error('Error response:', await response.text().catch(() => 'Could not read response text'));
+    }
+  }
+
+  if (!response.ok) {
+    throw new Error(`Failed to create video generation with analysis (multipart): ${response.status} ${response.statusText}`);
+  }
+
+  const data = await response.json();
   return data;
 }
 

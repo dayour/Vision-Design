@@ -25,6 +25,10 @@ class VideoGenerationRequest(BaseModel):
     n_seconds: int = Field(10, description="Length of the video in seconds")
     height: int = Field(720, description="Height of the video in pixels")
     width: int = Field(1280, description="Width of the video in pixels")
+    has_source_images: Optional[bool] = Field(
+        False, description="Whether source images are included")
+    image_count: Optional[int] = Field(
+        None, description="Number of source images")
 
 
 class VideoGenerationJobResponse(BaseModel):

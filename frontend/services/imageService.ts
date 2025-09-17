@@ -1,30 +1,8 @@
 // Image service - handles all image-related API calls
-import { API_BASE_URL, ImageGenerationResponse as ApiImageGenerationResponse, ImageSaveResponse as ApiImageSaveResponse } from './api';
+import { API_BASE_URL, ImageSaveResponse as ApiImageSaveResponse } from './api';
+import type { ImageGenerationResponse } from './api';
 
-interface TokenUsage {
-  total_tokens: number;
-  input_tokens: number;
-  output_tokens: number;
-  input_tokens_details?: {
-    text_tokens: number;
-    image_tokens: number;
-  };
-}
-
-// Extend the API's ImageGenerationResponse to include our additional fields
-export interface ImageGenerationResponse {
-  success: boolean;
-  message: string;
-  imgen_model_response: {
-    created: number;
-    data: {
-      b64_json?: string;
-      url?: string;
-      revised_prompt?: string;
-    }[];
-  };
-  token_usage?: TokenUsage;
-}
+export type { ImageGenerationResponse } from './api';
 
 interface PromptEnhancementResponse {
   enhanced_prompt: string;
@@ -75,28 +53,29 @@ export async function saveGeneratedImage(
     output_format?: string;
     save_all?: boolean;
     folder_path?: string;
+    analyze?: boolean; // NEW: request backend analysis
   }
 ): Promise<ApiImageSaveResponse> {
   // Import the saveGeneratedImages function from api.ts
   const { saveGeneratedImages } = await import('./api');
   
   try {
-    // Convert our ImageGenerationResponse to ApiImageGenerationResponse
-    const apiResponse: ApiImageGenerationResponse = {
-      created: generationResponse.imgen_model_response.created,
-      data: generationResponse.imgen_model_response.data
-    };
-    
-    // Call the saveGeneratedImages function with the correct parameters
+    if (!generationResponse?.imgen_model_response?.data ||
+        generationResponse.imgen_model_response.data.length === 0) {
+      throw new Error('No image data found in generation response');
+    }
+
+    // Call the saveGeneratedImages function with the full generation response
     return await saveGeneratedImages(
-      apiResponse,
+      generationResponse,
       options.prompt || '',
       options.save_all || false,
       options.folder_path || '',
       options.output_format || 'png',
       options.model || 'gpt-image-1',
       options.background || 'auto',
-      options.size || '1024x1024'
+      options.size || '1024x1024',
+      options.analyze ?? true // default to true to match older behavior
     );
   } catch (error: unknown) {
     console.error('Error saving image:', error);

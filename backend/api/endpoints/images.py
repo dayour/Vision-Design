@@ -23,6 +23,7 @@ from backend.models.images import (
     ImageDeleteRequest,
     ImageDeleteResponse,
     ImageAnalyzeRequest,
+    ImageAnalyzeCustomRequest,
     ImageAnalyzeResponse,
     ImagePromptEnhancementRequest,
     ImagePromptEnhancementResponse,
@@ -34,6 +35,7 @@ from backend.models.images import (
     ImageSaveResponse,
     TokenUsage,
     InputTokensDetails,
+    ImageGenerateWithAnalysisRequest,
 )
 from backend.models.gallery import MediaType
 from backend.core import llm_client, dalle_client, image_sas_token
@@ -879,12 +881,74 @@ async def save_generated_images(
             analysis_results=analysis_results if analyzed else None,
             analyzed=analyzed,
         )
-
     except Exception as e:
         logger.error(f"Error saving generated images: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500, detail=f"Error saving generated images: {str(e)}"
         )
+
+@router.post("/generate-with-analysis", response_model=ImageSaveResponse)
+async def generate_image_with_analysis(
+    req: ImageGenerateWithAnalysisRequest,
+    azure_storage_service: AzureBlobStorageService = Depends(
+        lambda: AzureBlobStorageService()
+    ),
+    cosmos_service: Optional[CosmosDBService] = Depends(get_cosmos_service),
+):
+    """
+    Generate image(s), then save to storage and optionally analyze in one call.
+    Reuses existing generation and save logic to avoid duplication.
+    """
+    try:
+        # Build generation parameters (same as /images/generate)
+        params = {
+            "prompt": req.prompt,
+            "model": req.model,
+            "n": req.n,
+            "size": req.size,
+        }
+
+        if req.model == "gpt-image-1":
+            if req.quality:
+                params["quality"] = req.quality
+            params["background"] = req.background
+            if req.output_format and req.output_format != "png":
+                params["output_format"] = req.output_format
+            if req.output_format in ["webp", "jpeg"] and req.output_compression != 100:
+                params["output_compression"] = req.output_compression
+            if req.moderation and req.moderation != "auto":
+                params["moderation"] = req.moderation
+            if req.user:
+                params["user"] = req.user
+
+        # Generate images via model client
+        response = dalle_client.generate_image(**params)
+
+        # Construct generation response to feed into existing /save logic
+        gen_response = ImageGenerationResponse(
+            success=True,
+            message="Image(s) generated successfully",
+            imgen_model_response=response,
+            token_usage=None,
+        )
+
+        save_request = ImageSaveRequest(
+            generation_response=gen_response,
+            prompt=req.prompt,
+            model=req.model,
+            size=req.size,
+            background=req.background,
+            output_format=req.output_format,
+            save_all=req.save_all,
+            folder_path=req.folder_path,
+            analyze=req.analyze,
+        )
+
+        # Call existing save endpoint function directly with explicit deps
+        return await save_generated_images(save_request, azure_storage_service, cosmos_service)
+    except Exception as e:
+        logger.error(f"Error in /images/generate-with-analysis: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/list", response_model=ImageListResponse)
@@ -1052,6 +1116,164 @@ def analyze_image(req: ImageAnalyzeRequest):
         logger.error(f"Error analyzing image: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500, detail=f"Error analyzing image: {str(e)}")
+
+
+@router.post("/analyze-custom", response_model=ImageAnalyzeResponse)
+def analyze_image_custom(req: ImageAnalyzeCustomRequest):
+    """
+    Analyze an image using a custom prompt while maintaining the same response structure.
+    
+    Args:
+        image_path: path on Azure Blob Storage. Supports a full URL with or without a SAS token.
+        OR
+        base64_image: Base64-encoded image data to analyze directly.
+        custom_prompt: Custom instructions for the analysis.
+        
+    Returns:
+        Response containing description, products, tags, and feedback based on custom prompt.
+    """
+    try:
+        # Initialize image_content
+        image_content = None
+
+        # Option 1: Process from URL/path  
+        if req.image_path:
+            file_path = req.image_path
+
+            # check if the path is a valid Azure blob storage path
+            pattern = r"^https://[a-z0-9]+\.blob\.core\.windows\.net/[a-z0-9]+/.+"
+            match = re.match(pattern, file_path)
+
+            if not match:
+                raise ValueError("Invalid Azure blob storage path")
+            else:
+                # check if the path contains a SAS token
+                if "?" not in file_path:
+                    file_path += f"?{image_sas_token}"
+
+            # Download the image from the URL
+            response = requests.get(file_path, timeout=30)
+            if response.status_code != 200:
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail=f"Failed to download image: HTTP {response.status_code}",
+                )
+
+            # Get image content from response
+            image_content = response.content
+
+        # Option 2: Process from base64 string
+        elif req.base64_image:
+            try:
+                # Decode base64 to binary
+                image_content = base64.b64decode(req.base64_image)
+            except Exception as e:
+                raise HTTPException(
+                    status_code=400, detail=f"Invalid base64 image data: {str(e)}"
+                )
+
+        # Process the image with PIL to handle transparency properly (same as regular analyze)
+        try:
+            # Open the image with PIL
+            with Image.open(io.BytesIO(image_content)) as img:
+                # Check if it's a transparent PNG
+                has_transparency = img.mode == "RGBA" and "A" in img.getbands()
+
+                if has_transparency:
+                    # Create a white background
+                    background = Image.new("RGBA", img.size, (255, 255, 255, 255))
+                    # Paste the image on the background
+                    background.paste(img, (0, 0), img)
+                    # Convert to RGB (remove alpha channel)
+                    background = background.convert("RGB")
+
+                    # Save to bytes
+                    img_byte_arr = io.BytesIO()
+                    background.save(img_byte_arr, format="JPEG")
+                    img_byte_arr.seek(0)
+                    image_content = img_byte_arr.getvalue()
+
+                # Also try to resize if the image is very large (LLM models have token limits)
+                width, height = img.size
+                if width > 1500 or height > 1500:
+                    # Calculate new dimensions
+                    max_dimension = 1500
+                    if width > height:
+                        new_width = max_dimension
+                        new_height = int(height * (max_dimension / width))
+                    else:
+                        new_height = max_dimension
+                        new_width = int(width * (max_dimension / height))
+
+                    # Resize the image
+                    if has_transparency:
+                        # We already have the background image from above
+                        resized_img = background.resize((new_width, new_height))
+                    else:
+                        resized_img = img.resize((new_width, new_height))
+
+                    # Save to bytes
+                    img_byte_arr = io.BytesIO()
+                    resized_img.save(
+                        img_byte_arr,
+                        format="JPEG" if resized_img.mode == "RGB" else "PNG",
+                    )
+                    img_byte_arr.seek(0)
+                    image_content = img_byte_arr.getvalue()
+        except Exception as img_error:
+            logger.error(f"Error processing image with PIL: {str(img_error)}")
+            # If PIL processing fails, continue with the original image
+
+        # Convert to base64
+        image_base64 = base64.b64encode(image_content).decode("utf-8")
+        # Remove data URL prefix if present
+        image_base64 = re.sub(r"^data:image/.+;base64,", "", image_base64)
+
+        # Create custom system message using the provided custom prompt
+        custom_prompt = req.custom_prompt
+        if not custom_prompt or not custom_prompt.strip():
+            raise HTTPException(
+                status_code=400, detail="Custom prompt is required for custom analysis"
+            )
+
+        custom_system_message = f"""You are an expert in analyzing images.
+You are provided with a single image to analyze in detail.
+
+CUSTOM ANALYSIS INSTRUCTIONS:
+{custom_prompt}
+
+Your task is to extract the following based on the custom instructions above:
+1. detailed description based on the custom requirements above
+2. named brands or named products visible in the image  
+3. metadata tags useful for organizing and searching content. Limit to the 5 most relevant tags.
+4. feedback to improve the image based on the custom criteria above
+
+Return the result as a valid JSON object:
+{{
+    "description": "<Custom analysis based on provided instructions>",
+    "products": "<named brands / named products identified>",
+    "tags": ["<tag1>", "<tag2>", "<tag3>", "<tag4>", "<tag5>"],
+    "feedback": "<Feedback based on custom criteria>"
+}}
+"""
+
+        # analyze the image using the LLM with custom prompt
+        image_analyzer = ImageAnalyzer(llm_client, settings.LLM_DEPLOYMENT)
+        insights = image_analyzer.image_chat(image_base64, custom_system_message)
+
+        description = insights.get("description")
+        products = insights.get("products") 
+        tags = insights.get("tags")
+        feedback = insights.get("feedback")
+
+        return ImageAnalyzeResponse(
+            description=description, products=products, tags=tags, feedback=feedback
+        )
+
+    except Exception as e:
+        logger.error(f"Error analyzing image with custom prompt: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500, detail=f"Error analyzing image with custom prompt: {str(e)}")
 
 
 @router.post("/prompt/enhance", response_model=ImagePromptEnhancementResponse)

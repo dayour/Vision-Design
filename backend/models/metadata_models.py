@@ -113,6 +113,13 @@ class AssetMetadataUpdateRequest(BaseModel):
     custom_metadata: Optional[Dict[str, str]] = Field(
         None, description="Additional custom metadata"
     )
+    # NEW: Support nested analysis structure updates and analysis flag
+    analysis: Optional[Dict[str, Any]] = Field(
+        None, description="Nested analysis results structure"
+    )
+    has_analysis: Optional[bool] = Field(
+        None, description="Flag indicating if analysis is available"
+    )
 
 
 class AssetMetadataResponse(BaseResponse):

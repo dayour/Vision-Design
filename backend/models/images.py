@@ -186,6 +186,51 @@ class ImageSaveResponse(BaseResponse):
     )
 
 
+class ImageGenerateWithAnalysisRequest(BaseModel):
+    """Request model for generating, analyzing, and saving images in one call"""
+    # Generation parameters (mirrors ImageGenerationRequest)
+    prompt: str = Field(..., description="User prompt for image generation")
+    model: str = Field("gpt-image-1", description="Image generation model to use")
+    n: int = Field(1, description="Number of images to generate (1-10)")
+    size: str = Field(
+        "auto",
+        description="Output image dimensions. One of 1024x1024, 1536x1024, 1024x1536, or auto.",
+    )
+    response_format: str = Field(
+        "b64_json",
+        description="Response format for generated image(s). gpt-image-1 returns b64_json",
+    )
+    quality: Optional[str] = Field(
+        "auto", description="Quality setting: 'low', 'medium', 'high', 'auto'"
+    )
+    output_format: Optional[str] = Field(
+        "png", description="Output format: 'png', 'webp', 'jpeg'"
+    )
+    output_compression: Optional[int] = Field(
+        100,
+        description="Compression percentage for WEBP/JPEG (0-100). Only for webp/jpeg",
+    )
+    background: Optional[str] = Field(
+        "auto",
+        description="Background: 'transparent', 'opaque', 'auto'. Transparent needs png/webp",
+    )
+    moderation: Optional[str] = Field(
+        "auto", description="Moderation strictness: 'auto', 'low'"
+    )
+    user: Optional[str] = Field(
+        None, description="End-user identifier for abuse monitoring"
+    )
+
+    # Save/analysis parameters
+    save_all: bool = Field(True, description="Whether to save all variants or first only")
+    folder_path: Optional[str] = Field(
+        None, description="Folder path to save images (e.g., 'my-album' or 'a/b')"
+    )
+    analyze: bool = Field(
+        True, description="Whether to analyze images and store analysis results"
+    )
+
+
 class ImageListRequest(BaseModel):
     """Request model for listing images"""
     # TODO: Add filtering and sorting parameters
@@ -223,6 +268,31 @@ class ImageAnalyzeRequest(BaseModel):
     base64_image: Optional[str] = Field(
         None,
         description="Base64-encoded image data to analyze directly. Must not include the 'data:image/...' prefix."
+    )
+
+    @validator('image_path', 'base64_image')
+    def validate_at_least_one_source(cls, v, values):
+        # If we're validating base64_image and image_path was empty, base64_image must not be None
+        # Or if we're validating image_path and base64_image is not in values, image_path must not be None
+        if 'image_path' in values and values['image_path'] is None and v is None:
+            raise ValueError(
+                "Either image_path or base64_image must be provided")
+        return v
+
+
+class ImageAnalyzeCustomRequest(BaseModel):
+    """Request model for analyzing an image with a custom prompt"""
+    image_path: Optional[str] = Field(
+        None,
+        description="Path to the image file on Azure Blob Storage. Supports a full URL with or without a SAS token."
+    )
+    base64_image: Optional[str] = Field(
+        None,
+        description="Base64-encoded image data to analyze directly. Must not include the 'data:image/...' prefix."
+    )
+    custom_prompt: str = Field(
+        ...,
+        description="Custom instructions for analyzing the image. This will guide what aspects the AI should focus on."
     )
 
     @validator('image_path', 'base64_image')

@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Wand2Icon, RotateCwIcon } from 'lucide-react';
+import { Wand2Icon, RotateCwIcon, Maximize } from 'lucide-react';
 import { toast } from "sonner";
 import { createDebugMask } from './createDebugMask';
 
@@ -29,7 +29,7 @@ export default function GenerateForm({
   const [isLoading, setIsLoading] = useState(false);
   const [model] = useState('gpt-image-1');
   const [quality, setQuality] = useState('auto');
-  const [size] = useState('auto');
+  const [size, setSize] = useState('auto');
   const [outputFormat, setOutputFormat] = useState('png');
   const [inputFidelity, setInputFidelity] = useState('low');
   const [showPromptIdeas, setShowPromptIdeas] = useState(false);
@@ -321,7 +321,7 @@ export default function GenerateForm({
         </div>
         
         <div className="flex items-center gap-3 mt-4">
-          <div className="grid grid-cols-3 gap-3 flex-1">
+          <div className="grid grid-cols-4 gap-3 flex-1">
             <div>
               <Label className="text-sm font-medium mb-1.5 block">
                 Image Quality
@@ -375,6 +375,29 @@ export default function GenerateForm({
                 <SelectContent>
                   <SelectItem value="low">Low</SelectItem>
                   <SelectItem value="high">High</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div>
+              <Label className="text-sm font-medium mb-1.5 block">
+                Resolution
+              </Label>
+              <Select 
+                value={size}
+                onValueChange={setSize}
+              >
+                <SelectTrigger>
+                  <div className="flex items-center gap-2">
+                    <Maximize className="h-4 w-4" />
+                    <SelectValue placeholder="Auto" />
+                  </div>
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="auto">Auto</SelectItem>
+                  <SelectItem value="1024x1024">1024x1024</SelectItem>
+                  <SelectItem value="1536x1024">1536x1024 (landscape)</SelectItem>
+                  <SelectItem value="1024x1536">1024x1536 (portrait)</SelectItem>
                 </SelectContent>
               </Select>
             </div>

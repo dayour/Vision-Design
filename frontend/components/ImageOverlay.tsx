@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import Image from "next/image";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { X, Settings, Wand2, Loader2, ArrowUp, Images, FolderTree, Plus, Check, RefreshCw, Layers, FileType, PlusCircle, BarChart4, Eye, Maximize } from "lucide-react";
@@ -388,16 +389,21 @@ export function ImageOverlay({
               <div className="flex flex-wrap gap-2 items-center">
                 {sourceImages.map((img, index) => (
                   <div key={index} className="relative">
-                    <img 
-                      src={URL.createObjectURL(img)} 
-                      alt={`Image ${index + 1}`} 
-                      className={cn(
-                        "w-12 h-12 object-cover rounded-md border transition-all duration-200",
-                        index === 0 && sourceImages.length > 1 
-                          ? "border-sky-300 ring-2 ring-sky-300/50 shadow-lg shadow-sky-300/25 animate-pulse" 
-                          : "border-gray-500/30"
-                      )}
-                    />
+                    <div className="relative h-12 w-12">
+                      <Image 
+                        src={URL.createObjectURL(img)} 
+                        alt={`Image ${index + 1}`}
+                        fill
+                        className={cn(
+                          "rounded-md border object-cover transition-all duration-200",
+                          index === 0 && sourceImages.length > 1 
+                            ? "border-sky-300 ring-2 ring-sky-300/50 shadow-lg shadow-sky-300/25 animate-pulse" 
+                            : "border-gray-500/30"
+                        )}
+                        sizes="48px"
+                        unoptimized
+                      />
+                    </div>
                     {/* Primary image indicator */}
                     {index === 0 && sourceImages.length > 1 && (
                       <div className="absolute -top-1 -right-1 bg-sky-400 text-white text-xs rounded-full w-4 h-4 flex items-center justify-center font-bold">

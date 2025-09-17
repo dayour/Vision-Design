@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from "react";
+import Image from "next/image";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { X, ArrowUp, Settings, Eye, Loader2, Wand2, RectangleHorizontal, Square, RectangleVertical, SignalLow, SignalMedium, SignalHigh, Timer, Copy, FolderTree, Plus, RefreshCw } from "lucide-react";
+import { X, ArrowUp, Settings, Eye, Loader2, Wand2, RectangleHorizontal, Square, RectangleVertical, SignalLow, SignalMedium, SignalHigh, Timer, Copy, FolderTree, Plus, RefreshCw, PlusCircle } from "lucide-react";
 import {
   Select,
   SelectContent,
@@ -48,6 +49,9 @@ interface VideoOverlayProps {
     imageCache: boolean;
     folder?: string;
     brandsList?: string[];
+    // NEW: Image-to-Video settings
+    sourceImages?: File[];
+    hasSourceImages?: boolean;
   }) => void;
   isGenerating?: boolean;
   onPromptChange?: (newPrompt: string, isEnhanced: boolean) => void;
@@ -129,9 +133,28 @@ export function VideoOverlay({
   const [isCreatingFolderLoading, setIsCreatingFolderLoading] = useState(false);
   const [isRefreshingFolders, setIsRefreshingFolders] = useState(false);
   
-  // Reference to the textarea element
+  // NEW: Image-to-Video state (mirroring ImageOverlay)
+  const [sourceImages, setSourceImages] = useState<File[]>([]);
+  const [isClient, setIsClient] = useState(false);
+  // Derived: are we in image+text mode
+  const isImageToVideo = isClient && sourceImages.length > 0;
+
+  // References
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const newFolderInputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Client-side detection (same as ImageOverlay)
+  useEffect(() => {
+    setIsClient(true);
+  }, []);
+
+  // Force variants to 1 when images are attached
+  useEffect(() => {
+    if (sourceImages.length > 0 && variants !== "1") {
+      setVariants("1");
+    }
+  }, [sourceImages.length, variants]);
 
   // Update folder when selectedFolder prop changes
   useEffect(() => {
@@ -274,6 +297,63 @@ export function VideoOverlay({
     }
   };
 
+  // NEW: Image handling functions (mirroring ImageOverlay)
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files) {
+      const files = Array.from(e.target.files);
+      const validFiles: File[] = [];
+      
+      for (const file of files) {
+        // Validate file type (same as ImageOverlay)
+        if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+          toast.error("Invalid file type", {
+            description: `${file.name}: Only JPEG, PNG, and WebP images are supported`
+          });
+          continue;
+        }
+        
+        // Validate file size (same as ImageOverlay)
+        if (file.size > 25 * 1024 * 1024) {
+          toast.error("File too large", {
+            description: `${file.name}: Maximum file size is 25MB`
+          });
+          continue;
+        }
+        
+        validFiles.push(file);
+      }
+      
+      // Limit to 3 images for video (vs 5 for images)
+      if (sourceImages.length + validFiles.length > 3) {
+        toast.warning("Too many images", {
+          description: "Maximum 3 images can be used for video generation"
+        });
+        
+        const spaceLeft = 3 - sourceImages.length;
+        validFiles.splice(spaceLeft);
+      }
+      
+      if (validFiles.length > 0) {
+        setSourceImages(prev => [...prev, ...validFiles]);
+        
+        toast.success("Images selected", {
+          description: `Added ${validFiles.length} image${validFiles.length > 1 ? 's' : ''} for video generation`
+        });
+      }
+    }
+  };
+
+  const handleRemoveImage = (index: number) => {
+    setSourceImages(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const handleClearAllImages = () => {
+    setSourceImages([]);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+  };
+
   // Resize textarea when prompt changes
   useEffect(() => {
     if (textareaRef.current) {
@@ -290,13 +370,15 @@ export function VideoOverlay({
 
   const handleSubmit = () => {
     if (!prompt.trim()) return;
-    
+    // Enforce 1 variant when source images are present
+    const computedVariants = sourceImages.length > 0 ? "1" : variants;
+
     onGenerate({
       prompt,
       aspectRatio,
       resolution,
       duration,
-      variants,
+      variants: computedVariants,
       modality,
       analyzeVideo,
       brandsProtection,
@@ -309,6 +391,9 @@ export function VideoOverlay({
       saveImages,
       imageCache,
       folder,
+      // NEW: Image-to-Video settings
+      sourceImages: sourceImages,
+      hasSourceImages: sourceImages.length > 0
     });
   };
 
@@ -348,14 +433,77 @@ export function VideoOverlay({
   return (
     <div className="sticky bottom-0 left-0 right-0 flex items-end justify-center p-6 z-20 pointer-events-none">
       <div className={cn(
-        "w-full max-w-4xl transition-all duration-200 ease-in-out pointer-events-auto",
+        "w-full transition-all duration-200 ease-in-out pointer-events-auto",
         expanded ? "mb-6" : "mb-2"
-      )}>
+      )}
+      style={{
+        // Dynamic width based on image presence (same as ImageOverlay)
+        maxWidth: isClient && sourceImages.length > 0 ? '58rem' : '56rem'
+      }}>
         <div className={cn(
           "rounded-xl p-4 shadow-lg border",
           getOverlayBgColor()
         )}>
           <div className="flex flex-col space-y-4">
+            
+            {/* NEW: Image thumbnails row - EXACT replica from ImageOverlay */}
+            {isClient && sourceImages.length > 0 && (
+              <div className="flex flex-wrap gap-2 items-center">
+                {sourceImages.map((img, index) => (
+                  <div key={index} className="relative">
+                    <div className="relative h-12 w-12">
+                      <Image 
+                        src={URL.createObjectURL(img)} 
+                        alt={`Video Source ${index + 1}`} 
+                        fill
+                        className={cn(
+                          "rounded-md border object-cover transition-all duration-200",
+                          index === 0 && sourceImages.length > 1 
+                            ? "border-purple-300 ring-2 ring-purple-300/50 shadow-lg shadow-purple-300/25" 
+                            : "border-gray-500/30"
+                        )}
+                        sizes="48px"
+                        unoptimized
+                      />
+                    </div>
+                    
+                    {/* Primary image indicator - purple theme for video */}
+                    {index === 0 && sourceImages.length > 1 && (
+                      <div className="absolute -top-1 -right-1 bg-purple-500 text-white text-xs rounded-full w-4 h-4 flex items-center justify-center font-bold">
+                        1
+                      </div>
+                    )}
+                    
+                    <Button 
+                      onClick={() => handleRemoveImage(index)}
+                      className={cn(
+                        "absolute -top-2 -right-2 rounded-full p-0.5 hover:bg-black",
+                        isDarkTheme ? "bg-black/70 text-white" : "bg-white/90 text-gray-700"
+                      )}
+                      disabled={isGenerating}
+                      aria-label="Remove image"
+                      variant="ghost"
+                      size="icon"
+                    >
+                      <X className="h-3 w-3" />
+                    </Button>
+                  </div>
+                ))}
+                
+                {/* Clear all button */}
+                {sourceImages.length > 1 && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={handleClearAllImages}
+                    className={cn("text-xs", getMutedTextColor(), getHoverBgColor())}
+                    disabled={isGenerating}
+                  >
+                    Clear all
+                  </Button>
+                )}
+              </div>
+            )}
             <div className="flex items-center gap-3">
               <Button
                 variant="ghost"
@@ -375,6 +523,46 @@ export function VideoOverlay({
                 )}
               </Button>
               
+              {/* NEW: Upload images button (mirrors ImageOverlay) */}
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => {
+                        if (fileInputRef.current) {
+                          fileInputRef.current.click();
+                        }
+                      }}
+                      aria-label="Upload images"
+                      className={cn(
+                        getMutedTextColor(),
+                        getHoverBgColor()
+                      )}
+                      disabled={isGenerating}
+                    >
+                      <PlusCircle className="h-5 w-5" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <p>Upload images to guide video (max 3)</p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+
+              {/* Hidden file input for image selection */}
+              <input
+                type="file"
+                ref={fileInputRef}
+                onChange={handleFileSelect}
+                accept="image/jpeg,image/png,image/webp"
+                className="hidden"
+                disabled={isGenerating}
+                aria-label="Upload image files"
+                multiple
+              />
+              
               <Textarea
                 ref={textareaRef}
                 value={prompt}
@@ -384,7 +572,9 @@ export function VideoOverlay({
                     onPromptChange(e.target.value, false);
                   }
                 }}
-                placeholder="Describe your video..."
+                placeholder={isClient && sourceImages.length > 0 
+                  ? "Describe how to use these images in the video..."
+                  : "Describe your video..."}
                 className={cn(
                   "border border-gray-500/30 min-h-[38px] resize-none overflow-hidden",
                   getControlBgColor(),
@@ -567,7 +757,7 @@ export function VideoOverlay({
                             <Select
                               value={variants}
                               onValueChange={setVariants}
-                              disabled={isGenerating}
+                              disabled={isGenerating || isImageToVideo}
                             >
                               <SelectTrigger className="w-[150px] h-8">
                                 <div className="flex items-center">
@@ -576,16 +766,22 @@ export function VideoOverlay({
                                 </div>
                               </SelectTrigger>
                               <SelectContent>
-                                <SelectItem value="1">1 variation</SelectItem>
-                                <SelectItem value="2">2 variations</SelectItem>
-                                <SelectItem value="3">3 variations</SelectItem>
-                                <SelectItem value="4">4 variations</SelectItem>
-                                <SelectItem value="5">5 variations</SelectItem>
+                                {isImageToVideo ? (
+                                  <SelectItem value="1">1 variation</SelectItem>
+                                ) : (
+                                  <>
+                                    <SelectItem value="1">1 variation</SelectItem>
+                                    <SelectItem value="2">2 variations</SelectItem>
+                                    <SelectItem value="3">3 variations</SelectItem>
+                                    <SelectItem value="4">4 variations</SelectItem>
+                                    <SelectItem value="5">5 variations</SelectItem>
+                                  </>
+                                )}
                               </SelectContent>
                             </Select>
                           </TooltipTrigger>
                           <TooltipContent>
-                            <p>Variations: Number of different outputs to generate</p>
+                            <p>{isImageToVideo ? 'Variations limited to 1 when images are attached' : 'Variations: Number of different outputs to generate'}</p>
                           </TooltipContent>
                         </Tooltip>
                         

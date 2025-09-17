@@ -84,7 +84,21 @@ router = APIRouter()
 
 
 @router.post("/jobs", response_model=VideoGenerationJobResponse)
-def create_video_generation_job(req: VideoGenerationRequest):
+async def create_video_generation_job(
+    prompt: str = Form(...),
+    n_variants: int = Form(1),
+    n_seconds: int = Form(10),
+    height: int = Form(1080),
+    width: int = Form(1920),
+    folder_path: str = Form(""),
+    analyze_video: bool = Form(False),
+    # NEW: Optional image files
+    images: Optional[List[UploadFile]] = File(None)
+):
+    """
+    Enhanced to support both text-only and image+text video generation.
+    Follows exact same workflow as existing video generation.
+    """
     try:
         # Ensure Sora client is available
         if sora_client is None:
@@ -93,15 +107,62 @@ def create_video_generation_job(req: VideoGenerationRequest):
                 detail="Video generation service is currently unavailable. Please check your environment configuration.",
             )
 
-        job = sora_client.create_video_generation_job(
-            prompt=req.prompt,
-            n_seconds=req.n_seconds,
-            height=req.height,
-            width=req.width,
-            n_variants=req.n_variants,
-        )
-        return VideoGenerationJobResponse(**job)
+        # Process images if provided
+        processed_images = []
+        image_filenames = []
+        
+        if images:
+            for idx, image_file in enumerate(images):
+                # Read image content
+                image_content = await image_file.read()
+
+                # Validate file size (25MB limit)
+                if len(image_content) > 25 * 1024 * 1024:
+                    raise HTTPException(400, f"Image {idx+1} exceeds 25MB limit")
+
+                # Validate file type
+                if not image_file.content_type or not image_file.content_type.startswith('image/'):
+                    raise HTTPException(400, f"File {idx+1} is not a valid image")
+
+                processed_images.append(image_content)
+                image_filenames.append(image_file.filename or f"image_{idx+1}.jpg")
+        
+        # Create job using appropriate method
+        if processed_images:
+            # Use image+text method
+            job = sora_client.create_video_generation_job_with_images(
+                prompt=prompt,
+                images=processed_images,
+                image_filenames=image_filenames,
+                n_seconds=n_seconds,
+                height=height,
+                width=width,
+                n_variants=n_variants
+            )
+        else:
+            # Use existing text-only method
+            job = sora_client.create_video_generation_job(
+                prompt=prompt,
+                n_seconds=n_seconds,
+                height=height,
+                width=width,
+                n_variants=n_variants
+            )
+        
+        # Create response with enhanced metadata
+        response_data = {
+            **job,
+            # Add metadata about images
+            "has_source_images": bool(processed_images),
+            "image_count": len(processed_images) if processed_images else 0,
+            "folder_path": folder_path,
+            "analyze_video": analyze_video
+        }
+        
+        return VideoGenerationJobResponse(**response_data)
+        
     except Exception as e:
+        logger.error(f"Error creating video job: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -174,6 +235,230 @@ def delete_failed_video_generation_jobs():
                     pass
         return {"deleted_failed_jobs": deleted}
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post(
+    "/generate-with-analysis/upload", response_model=VideoGenerationWithAnalysisResponse
+)
+async def create_video_generation_with_analysis_upload(
+    # Unified form-based endpoint to support optional image uploads
+    prompt: str = Form(...),
+    n_variants: int = Form(1),
+    n_seconds: int = Form(10),
+    height: int = Form(720),
+    width: int = Form(1280),
+    analyze_video: bool = Form(True),
+    folder_path: str = Form(""),
+    metadata: Optional[str] = Form(None),
+    images: Optional[List[UploadFile]] = File(None),
+    cosmos_service: Optional[CosmosDBService] = Depends(get_cosmos_service),
+):
+    """
+    Unified endpoint: create a video generation job (with or without source images),
+    wait for completion, optionally analyze, upload to gallery, and create metadata records.
+    """
+    import tempfile
+    import requests
+    from azure.storage.blob import ContentSettings
+    from backend.core.azure_storage import AzureBlobStorageService
+
+    try:
+        logger.info(f"Cosmos DB service available: {cosmos_service is not None}")
+        if sora_client is None:
+            raise HTTPException(status_code=503, detail="Video generation service is currently unavailable.")
+        if analyze_video and llm_client is None:
+            raise HTTPException(status_code=503, detail="LLM service is currently unavailable for video analysis.")
+
+        # Parse optional metadata JSON for folder or other decorations
+        metadata_dict = None
+        if metadata:
+            try:
+                metadata_dict = json.loads(metadata)
+            except Exception:
+                metadata_dict = None
+
+        # Prefer explicit folder_path; fallback to metadata.folder
+        selected_folder = folder_path or (metadata_dict.get("folder") if metadata_dict else "")
+
+        # Prepare optional images
+        processed_images: List[bytes] = []
+        image_filenames: List[str] = []
+        if images:
+            for idx, image_file in enumerate(images):
+                content = await image_file.read()
+                if len(content) > 25 * 1024 * 1024:
+                    raise HTTPException(400, f"Image {idx+1} exceeds 25MB limit")
+                if not image_file.content_type or not image_file.content_type.startswith("image/"):
+                    raise HTTPException(400, f"File {idx+1} is not a valid image")
+                processed_images.append(content)
+                image_filenames.append(image_file.filename or f"image_{idx+1}.jpg")
+
+        # Create job with or without images
+        if processed_images:
+            job = sora_client.create_video_generation_job_with_images(
+                prompt=prompt,
+                images=processed_images,
+                image_filenames=image_filenames,
+                n_seconds=n_seconds,
+                height=height,
+                width=width,
+                n_variants=n_variants,
+            )
+        else:
+            job = sora_client.create_video_generation_job(
+                prompt=prompt,
+                n_seconds=n_seconds,
+                height=height,
+                width=width,
+                n_variants=n_variants,
+            )
+
+        job_response = VideoGenerationJobResponse(**job)
+        logger.info(f"Created job {job_response.id}, waiting for completion...")
+
+        # Poll job until completion
+        max_wait_time = 300
+        poll_interval = 5
+        elapsed_time = 0
+        while elapsed_time < max_wait_time:
+            current_job = sora_client.get_video_generation_job(job_response.id)
+            job_response = VideoGenerationJobResponse(**current_job)
+            if job_response.status == "succeeded":
+                logger.info(f"Job {job_response.id} completed successfully")
+                break
+            if job_response.status == "failed":
+                raise HTTPException(status_code=500, detail=f"Video generation failed: {job_response.failure_reason}")
+            time.sleep(poll_interval)
+            elapsed_time += poll_interval
+
+        if job_response.status != "succeeded":
+            raise HTTPException(status_code=408, detail="Video generation timed out. Please try again.")
+
+        analysis_results = None
+        if analyze_video and job_response.generations:
+            analysis_results = []
+            for generation in job_response.generations:
+                generation_id = generation.get("id")
+                if not generation_id:
+                    continue
+                # Download generation video to temp
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as temp_file:
+                    temp_file_path = temp_file.name
+                try:
+                    downloaded_path = sora_client.get_video_generation_video_content(
+                        generation_id,
+                        os.path.basename(temp_file_path),
+                        os.path.dirname(temp_file_path),
+                    )
+
+                    # Extract frames and analyze
+                    video_extractor = VideoExtractor(downloaded_path)
+                    frames = video_extractor.extract_video_frames(interval=2)
+                    video_analyzer = VideoAnalyzer(llm_client, settings.LLM_DEPLOYMENT)
+                    insights = video_analyzer.video_chat(frames, system_message=analyze_video_system_message)
+
+                    analysis_result = VideoAnalyzeResponse(
+                        summary=insights.get("summary", ""),
+                        products=insights.get("products", ""),
+                        tags=insights.get("tags", []),
+                        feedback=insights.get("feedback", ""),
+                    )
+                    analysis_results.append(analysis_result)
+
+                    # Upload to gallery with metadata
+                    azure_service = AzureBlobStorageService()
+                    base_filename = generation.get("filename") or f"{re.sub(r'[^a-zA-Z0-9_\-]', '_', prompt.strip()[:50])}_{generation_id}.mp4"
+                    final_filename = base_filename
+                    normalized_folder = ""
+                    if selected_folder and selected_folder != "root":
+                        normalized_folder = azure_service.normalize_folder_path(selected_folder)
+                        final_filename = f"{normalized_folder}{base_filename}"
+
+                    container_client = azure_service.blob_service_client.get_container_client("videos")
+                    blob_client = container_client.get_blob_client(final_filename)
+
+                    # Build upload metadata
+                    analysis_data = {
+                        "summary": analysis_result.summary,
+                        "products": analysis_result.products,
+                        "tags": analysis_result.tags,
+                        "feedback": analysis_result.feedback,
+                        "analyzed_at": datetime.now().isoformat(),
+                    }
+                    upload_metadata = {
+                        "generation_id": generation_id,
+                        "prompt": prompt,
+                        "analysis": analysis_data,
+                        "has_analysis": True,
+                        "upload_date": datetime.now().isoformat(),
+                    }
+                    if selected_folder and selected_folder != "root":
+                        upload_metadata["folder_path"] = normalized_folder
+
+                    processed_metadata = {}
+                    for k, v in upload_metadata.items():
+                        if v is not None:
+                            processed_metadata[k] = azure_service._preprocess_metadata_value(str(v))
+
+                    with open(downloaded_path, "rb") as video_file:
+                        blob_client.upload_blob(
+                            data=video_file,
+                            content_settings=ContentSettings(content_type="video/mp4"),
+                            metadata=processed_metadata,
+                            overwrite=True,
+                        )
+
+                    blob_url = blob_client.url
+
+                    # Create Cosmos DB metadata record if available
+                    if cosmos_service:
+                        try:
+                            asset_id = final_filename.split(".")[0].split("/")[-1]
+                            video_info = os.stat(downloaded_path)
+                            cosmos_metadata = {
+                                "id": asset_id,
+                                "media_type": "video",
+                                "blob_name": final_filename,
+                                "container": "videos",
+                                "url": blob_url,
+                                "filename": base_filename,
+                                "size": video_info.st_size,
+                                "content_type": "video/mp4",
+                                "folder_path": normalized_folder,
+                                "prompt": prompt,
+                                "model": "sora",
+                                "generation_id": generation_id,
+                                "analysis": analysis_data,
+                                "has_analysis": True,
+                                "duration": n_seconds,
+                                "resolution": f"{width}x{height}",
+                                "custom_metadata": {
+                                    "n_variants": str(n_variants),
+                                    "analyzed": "true",
+                                    "job_id": job_response.id,
+                                },
+                            }
+                            cosmos_service.create_asset_metadata(cosmos_metadata)
+                        except Exception as cosmos_error:
+                            logger.error(f"Failed to create Cosmos DB metadata: {cosmos_error}")
+
+                finally:
+                    try:
+                        if os.path.exists(temp_file_path):
+                            os.unlink(temp_file_path)
+                        if "downloaded_path" in locals() and os.path.exists(downloaded_path):
+                            os.unlink(downloaded_path)
+                    except Exception:
+                        pass
+
+        return VideoGenerationWithAnalysisResponse(
+            job=job_response,
+            analysis_results=analysis_results,
+            upload_results=None,
+        )
+    except Exception as e:
+        logger.error(f"Error in unified upload endpoint: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
