@@ -34,8 +34,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Visionary Lab",
-  description: "AI-powered Content Generation",
+  title: "Vision Design",
+  description: "AI-powered visual content creation prototype",
   manifest: "/manifest.json",
   icons: {
     apple: "/logo/icon-192.png",
@@ -43,7 +43,7 @@ export const metadata: Metadata = {
   appleWebApp: {
     capable: true,
     statusBarStyle: "default",
-    title: "Visionary Lab",
+    title: "Vision Design",
   },
   other: {
     "mobile-web-app-capable": "yes",

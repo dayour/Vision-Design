@@ -6,7 +6,7 @@ from pydantic import Extra, Field, validator
 class Settings(BaseSettings):
     # API Settings
     API_V1_STR: str = "/api/v1"
-    PROJECT_NAME: str = "Visionary Lab API"
+    PROJECT_NAME: str = "Vision Design API"
 
     # Model Provider Configuration
     MODEL_PROVIDER: str = "azure"  # Can be 'azure' or 'openai'
@@ -39,6 +39,11 @@ class Settings(BaseSettings):
 
     # Black Forest Labs API for Flux Models
     BFL_API_KEY: Optional[str] = None  # BFL API key for Flux models
+    
+    # Foundry API for Flux Models (alternative hosting)
+    FOUNDRY_API_KEY: Optional[str] = None  # Foundry API key for hosted Flux models
+    FOUNDRY_ENDPOINT: Optional[str] = None  # Foundry API endpoint URL
+    FLUX_MODEL_PROVIDER: str = "bfl"  # Model provider: 'bfl' or 'foundry'
 
     # Azure Blob Storage Settings
     # Option 1: Connection string (deprecated)
@@ -63,8 +68,19 @@ class Settings(BaseSettings):
     # Azure Cosmos DB Settings
     AZURE_COSMOS_DB_ENDPOINT: Optional[str] = None  # Cosmos DB endpoint URL
     AZURE_COSMOS_DB_KEY: Optional[str] = None  # Cosmos DB primary key
-    AZURE_COSMOS_DB_ID: str = "visionarylab"  # Database name
+    AZURE_COSMOS_DB_ID: str = "visiondesign"  # Database name (updated from visionarylab)
     AZURE_COSMOS_CONTAINER_ID: str = "metadata"  # Container name for metadata
+
+    # Microsoft Dataverse Settings  
+    DATAVERSE_ENVIRONMENT_URL: Optional[str] = None  # Dataverse environment URL
+    DATAVERSE_CLIENT_ID: Optional[str] = None  # Azure AD app registration client ID
+    DATAVERSE_CLIENT_SECRET: Optional[str] = None  # Azure AD app registration client secret  
+    DATAVERSE_TABLE_NAME: str = "cr6f1_visionassets"  # Custom table name for image metadata
+    
+    # GitHub Integration
+    GITHUB_TOKEN: Optional[str] = None  # GitHub personal access token
+    GITHUB_REPO_OWNER: Optional[str] = None  # Repository owner for integration
+    GITHUB_REPO_NAME: Optional[str] = None  # Repository name for integration
 
     # Alternative: Managed Identity settings (for Azure-hosted deployments)
     USE_MANAGED_IDENTITY: bool = (

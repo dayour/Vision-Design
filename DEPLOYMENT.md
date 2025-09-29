@@ -1,6 +1,8 @@
 # Azure Deployment with Azure Developer CLI (azd)
 
-This guide shows how to deploy the Visionary Lab to Azure using the Azure Developer CLI for one-click deployments.
+Deploy the **Vision Design** prototype to Azure with comprehensive Flux model support, Dataverse integration, and streamlined authentication flows.
+
+This guide shows how to deploy the Vision Design prototype to Azure using the Azure Developer CLI for one-click deployments.
 
 ## Prerequisites
 
@@ -15,8 +17,8 @@ This guide shows how to deploy the Visionary Lab to Azure using the Azure Develo
 
 1. **Clone the repository**:
    ```bash
-   git clone <repository-url>
-   cd visionary-lab
+   git clone https://github.com/dayour/Vision-Design
+   cd Vision-Design
    ```
 
 2. **Authenticate and deploy**:
@@ -41,7 +43,16 @@ This guide shows how to deploy the Visionary Lab to Azure using the Azure Develo
    **Sora Configuration:**
    - **SORA_AOAI_RESOURCE**: Your Azure OpenAI resource name for Sora
    - **SORA_DEPLOYMENT**: Your Sora deployment name (e.g., "sora")
-   - **SORA_AOAI_API_KEY**: Your Sora API key
+   **Flux Models Configuration:**
+   - **BFL_API_KEY**: Your Black Forest Labs API key for standard Flux models
+   - **FOUNDRY_API_KEY**: Your Foundry API key for hosted Flux models (optional)
+   - **FOUNDRY_ENDPOINT**: Your Foundry API endpoint URL (optional)
+   - **FLUX_MODEL_PROVIDER**: Model provider preference (`bfl` or `foundry`)
+   
+   **Dataverse Configuration (Optional):**
+   - **DATAVERSE_ENVIRONMENT_URL**: Your Dataverse environment URL
+   - **DATAVERSE_CLIENT_ID**: Azure AD app registration client ID
+   - **DATAVERSE_CLIENT_SECRET**: Azure AD app registration client secret
 
 That's it! The `azd up` command will:
 - Create a new environment
