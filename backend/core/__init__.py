@@ -3,6 +3,7 @@ from openai import AzureOpenAI, OpenAI
 from .config import settings
 from .sora import Sora
 from .gpt_image import GPTImageClient
+from .flux_client import FluxClient
 import json
 from datetime import datetime, timedelta, timezone
 from azure.storage.blob import generate_container_sas, ContainerSasPermissions
@@ -36,6 +37,17 @@ except Exception as e:
     logger.error(f"Failed to initialize GPT-Image-1 client: {str(e)}")
     dalle_client = None
 
+# Initialize Flux client
+try:
+    flux_client = FluxClient() if settings.BFL_API_KEY else None
+    if flux_client:
+        logger.info("Initialized Flux client with BFL API")
+    else:
+        logger.warning("Flux client not initialized - BFL_API_KEY not provided")
+except Exception as e:
+    logger.error(f"Failed to initialize Flux client: {str(e)}")
+    flux_client = None
+
 # Initialize LLM client
 try:
     llm_client = AzureOpenAI(
@@ -63,6 +75,7 @@ try:
     logger.info("Generated SAS token for video container.")
 except Exception as e:
     logger.error(f"Failed to generate SAS token for video container: {str(e)}")
+    video_sas_token = None
 
 try:
     image_sas_token = generate_container_sas(
@@ -75,3 +88,4 @@ try:
     logger.info("Generated SAS token for image container.")
 except Exception as e:
     logger.error(f"Failed to generate SAS token for image container: {str(e)}")
+    image_sas_token = None
