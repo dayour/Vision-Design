@@ -12,7 +12,7 @@ import requests
 from fastapi import HTTPException, UploadFile
 from PIL import Image
 
-from backend.core import dalle_client, llm_client, image_sas_token
+from backend.core import dalle_client, llm_client, image_sas_token, flux_client
 from backend.core.analyze import ImageAnalyzer
 from backend.core.azure_storage import AzureBlobStorageService
 from backend.core.config import settings
@@ -46,43 +46,131 @@ class ImagePipelineService:
     # Generation / Edit helpers
     # ------------------------------------------------------------------
     async def generate(self, request: ImageGenerationRequest) -> ImageGenerationResponse:
-        """Generate images via the configured DALL-E/GPT-image client."""
+        """Generate images via the configured image generation client."""
         try:
-            params: Dict[str, object] = {
-                "prompt": request.prompt,
-                "model": request.model,
-                "n": request.n,
-                "size": request.size,
-            }
-
-            if request.model == "gpt-image-1":
-                if request.quality:
-                    params["quality"] = request.quality
-                params["background"] = request.background
-                if request.output_format != "png":
-                    params["output_format"] = request.output_format
-                if (
-                    request.output_format in ["webp", "jpeg"]
-                    and request.output_compression != 100
-                ):
-                    params["output_compression"] = request.output_compression
-                if request.moderation != "auto":
-                    params["moderation"] = request.moderation
-                if request.user:
-                    params["user"] = request.user
-
-            response = dalle_client.generate_image(**params)
-            token_usage = self._extract_token_usage(response)
-
-            return ImageGenerationResponse(
-                success=True,
-                message="Refer to the imgen_model_response for details",
-                imgen_model_response=response,
-                token_usage=token_usage,
-            )
+            # Route to appropriate client based on model
+            if request.model.startswith("flux-"):
+                return await self._generate_flux(request)
+            else:
+                return await self._generate_gpt_image(request)
         except Exception as exc:  # pragma: no cover - delegated to HTTP response
             logger.error("Error generating image: %s", exc, exc_info=True)
             raise HTTPException(status_code=500, detail=str(exc))
+
+    async def _generate_gpt_image(self, request: ImageGenerationRequest) -> ImageGenerationResponse:
+        """Generate images via GPT-Image-1 client."""
+        params: Dict[str, object] = {
+            "prompt": request.prompt,
+            "model": request.model,
+            "n": request.n,
+            "size": request.size,
+        }
+
+        if request.model == "gpt-image-1":
+            if request.quality:
+                params["quality"] = request.quality
+            params["background"] = request.background
+            if request.output_format != "png":
+                params["output_format"] = request.output_format
+            if (
+                request.output_format in ["webp", "jpeg"]
+                and request.output_compression != 100
+            ):
+                params["output_compression"] = request.output_compression
+            if request.moderation != "auto":
+                params["moderation"] = request.moderation
+            if request.user:
+                params["user"] = request.user
+
+        response = dalle_client.generate_image(**params)
+        token_usage = self._extract_token_usage(response)
+
+        return ImageGenerationResponse(
+            success=True,
+            message="Refer to the imgen_model_response for details",
+            imgen_model_response=response,
+            token_usage=token_usage,
+        )
+
+    async def _generate_flux(self, request: ImageGenerationRequest) -> ImageGenerationResponse:
+        """Generate images via Flux client."""
+        if not flux_client:
+            raise HTTPException(
+                status_code=503,
+                detail="Flux service is currently unavailable. Please check your BFL API key configuration."
+            )
+
+        # Prepare Flux-specific parameters
+        kwargs = {}
+        if request.model == "flux-pro-ultra":
+            if request.aspect_ratio:
+                kwargs["aspect_ratio"] = request.aspect_ratio
+            else:
+                kwargs["aspect_ratio"] = "16:9"  # Default
+            kwargs.update({
+                "raw": request.raw,
+                "image_prompt": request.image_prompt,
+                "image_prompt_strength": request.image_prompt_strength,
+            })
+        else:  # flux-pro or flux-kontext
+            kwargs.update({
+                "width": request.width or 1024,
+                "height": request.height or 1024,
+            })
+            if request.model == "flux-kontext":
+                kwargs.update({
+                    "image_prompt": request.image_prompt,
+                    "image_prompt_strength": request.image_prompt_strength,
+                })
+
+        # Common Flux parameters
+        kwargs.update({
+            "prompt_upsampling": request.prompt_upsampling,
+            "seed": request.seed,
+            "safety_tolerance": request.safety_tolerance,
+            "output_format": request.output_format or "jpeg",
+            "webhook_url": request.webhook_url,
+            "webhook_secret": request.webhook_secret,
+        })
+
+        # Generate image and wait for completion
+        result = flux_client.generate_and_wait(
+            prompt=request.prompt,
+            model=request.model,
+            **kwargs
+        )
+
+        # Process result
+        if result.get("status") != "Ready":
+            raise HTTPException(
+                status_code=500,
+                detail=f"Flux generation failed: {result.get('status', 'Unknown error')}"
+            )
+
+        # Get image URL and download
+        image_url = result.get("result", {}).get("sample")
+        if not image_url:
+            raise HTTPException(status_code=500, detail="No image URL in Flux response")
+
+        image_data = flux_client.download_image(image_url)
+        image_b64 = base64.b64encode(image_data).decode('utf-8')
+
+        # Format response to match existing structure
+        flux_response = {
+            "created": result.get("created_at", 0),
+            "data": [{
+                "b64_json": image_b64,
+                "url": image_url,
+                "revised_prompt": request.prompt
+            }]
+        }
+
+        return ImageGenerationResponse(
+            success=True,
+            message="Image generated successfully with Flux",
+            imgen_model_response=flux_response,
+            token_usage=None,  # Flux doesn't provide token usage
+        )
 
     async def edit(self, request: ImageEditRequest) -> ImageGenerationResponse:
         """Edit images via the configured client using JSON payload data."""

@@ -45,7 +45,7 @@ class ImageGenerationRequest(BaseModel):
                         examples=["A futuristic city skyline at sunset"])
     model: str = Field("gpt-image-1",
                        description="Image generation model to use",
-                       examples=["gpt-image-1"])
+                       examples=["gpt-image-1", "flux-pro", "flux-pro-ultra", "flux-kontext"])
     n: int = Field(1,
                    description="Number of images to generate (1-10)")
     size: str = Field("auto",
@@ -71,6 +71,88 @@ class ImageGenerationRequest(BaseModel):
                                       examples=["auto", "low"])
     user: Optional[str] = Field(None,
                                 description="A unique identifier representing your end-user, which helps OpenAI monitor and detect abuse.")
+
+    # Flux-specific parameters
+    width: Optional[int] = Field(None,
+                                description="Image width in pixels (Flux models)",
+                                examples=[1024, 512, 768])
+    height: Optional[int] = Field(None,
+                                 description="Image height in pixels (Flux models)",
+                                 examples=[1024, 512, 768])
+    aspect_ratio: Optional[str] = Field(None,
+                                       description="Aspect ratio for Flux Pro Ultra (e.g., '16:9', '1:1', '4:3')",
+                                       examples=["16:9", "1:1", "4:3", "3:4"])
+    prompt_upsampling: Optional[bool] = Field(None,
+                                            description="Enhance prompt for better results (Flux models)")
+    seed: Optional[int] = Field(None,
+                               description="Seed for reproducible results (Flux models)")
+    safety_tolerance: Optional[int] = Field(None,
+                                          description="Content moderation level 0-6 (Flux models)")
+    raw: Optional[bool] = Field(None,
+                               description="Enable raw mode for natural aesthetics (Flux Pro Ultra)")
+    image_prompt: Optional[str] = Field(None,
+                                       description="Base64-encoded image for visual context (Flux Pro Ultra/Kontext)")
+    image_prompt_strength: Optional[float] = Field(None,
+                                                  description="Strength of image prompt influence 0.0-1.0 (Flux Pro Ultra/Kontext)")
+    webhook_url: Optional[str] = Field(None,
+                                      description="URL for async completion notification (Flux models)")
+    webhook_secret: Optional[str] = Field(None,
+                                         description="Secret for webhook verification (Flux models)")
+
+
+class FluxGenerationRequest(BaseModel):
+    """Request model specifically for Flux image generation"""
+    
+    prompt: str = Field(...,
+                        description="Text description of the desired image",
+                        examples=["A futuristic city skyline at sunset"])
+    model: str = Field("flux-pro",
+                       description="Flux model to use",
+                       examples=["flux-pro", "flux-pro-ultra", "flux-kontext"])
+    
+    # FLUX.1 [pro] parameters
+    width: Optional[int] = Field(1024,
+                                description="Image width in pixels",
+                                examples=[1024, 512, 768])
+    height: Optional[int] = Field(1024,
+                                 description="Image height in pixels", 
+                                 examples=[1024, 512, 768])
+    prompt_upsampling: Optional[bool] = Field(False,
+                                            description="Enhance prompt for better results")
+    seed: Optional[int] = Field(None,
+                               description="Seed for reproducible results")
+    safety_tolerance: Optional[int] = Field(2,
+                                          description="Content moderation level (0-6)")
+    output_format: Optional[str] = Field("jpeg",
+                                        description="Output format",
+                                        examples=["jpeg", "png"])
+    webhook_url: Optional[str] = Field(None,
+                                      description="URL for async completion notification")
+    webhook_secret: Optional[str] = Field(None,
+                                         description="Secret for webhook verification")
+    
+    # FLUX.1 [pro] Ultra specific parameters
+    aspect_ratio: Optional[str] = Field(None,
+                                       description="Aspect ratio for Ultra model",
+                                       examples=["16:9", "1:1", "4:3", "3:4"])
+    raw: Optional[bool] = Field(None,
+                               description="Enable raw mode for natural aesthetics (Ultra only)")
+    image_prompt: Optional[str] = Field(None,
+                                       description="Base64-encoded image for visual context")
+    image_prompt_strength: Optional[float] = Field(None,
+                                                  description="Strength of image prompt influence (0.0-1.0)")
+
+
+class FluxEditRequest(FluxGenerationRequest):
+    """Request model for Flux image editing (Kontext)"""
+    
+    model: str = Field("flux-kontext",
+                       description="Must use flux-kontext for editing",
+                       examples=["flux-kontext"])
+    image_prompt: str = Field(...,
+                             description="Base64-encoded source image to edit (required for Kontext)")
+    image_prompt_strength: Optional[float] = Field(0.1,
+                                                  description="Strength of image prompt influence (0.0-1.0)")
 
 
 class ImageEditRequest(ImageGenerationRequest):

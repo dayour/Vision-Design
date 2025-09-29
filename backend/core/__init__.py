@@ -3,6 +3,7 @@ from openai import AzureOpenAI, OpenAI
 from .config import settings
 from .sora import Sora
 from .gpt_image import GPTImageClient
+from .flux_client import FluxClient
 import json
 from datetime import datetime, timedelta, timezone
 from azure.storage.blob import generate_container_sas, ContainerSasPermissions
@@ -35,6 +36,17 @@ try:
 except Exception as e:
     logger.error(f"Failed to initialize GPT-Image-1 client: {str(e)}")
     dalle_client = None
+
+# Initialize Flux client
+try:
+    flux_client = FluxClient() if settings.BFL_API_KEY else None
+    if flux_client:
+        logger.info("Initialized Flux client with BFL API")
+    else:
+        logger.warning("Flux client not initialized - BFL_API_KEY not provided")
+except Exception as e:
+    logger.error(f"Failed to initialize Flux client: {str(e)}")
+    flux_client = None
 
 # Initialize LLM client
 try:

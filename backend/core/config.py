@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     OPENAI_ORG_VERIFIED: bool = False
     GPT_IMAGE_MAX_TOKENS: int = 150000  # Maximum token usage limit
 
+    # Black Forest Labs API for Flux Models
+    BFL_API_KEY: Optional[str] = None  # BFL API key for Flux models
+
     # Azure Blob Storage Settings
     # Option 1: Connection string (deprecated)
     AZURE_STORAGE_CONNECTION_STRING: Optional[str] = None
