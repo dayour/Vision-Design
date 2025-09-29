@@ -75,6 +75,7 @@ try:
     logger.info("Generated SAS token for video container.")
 except Exception as e:
     logger.error(f"Failed to generate SAS token for video container: {str(e)}")
+    video_sas_token = None
 
 try:
     image_sas_token = generate_container_sas(
@@ -87,3 +88,4 @@ try:
     logger.info("Generated SAS token for image container.")
 except Exception as e:
     logger.error(f"Failed to generate SAS token for image container: {str(e)}")
+    image_sas_token = None
