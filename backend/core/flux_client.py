@@ -16,26 +16,38 @@ logger = logging.getLogger(__name__)
 
 class FluxClient:
     """
-    Client for Flux models (FLUX.1 [pro], FLUX.1 [pro] Ultra, FLUX.1 Kontext) using Black Forest Labs API.
+    Client for Flux models (FLUX.1 [pro], FLUX.1 [pro] Ultra, FLUX.1 Kontext) 
+    with support for both Black Forest Labs API and Foundry hosting.
     """
 
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None, provider: Optional[str] = None):
         """
-        Initialize the Flux client with BFL API key
+        Initialize the Flux client with appropriate API configuration
 
         Args:
-            api_key: The BFL API key to use (optional, will use from settings if not provided)
+            api_key: The API key to use (optional, will use from settings if not provided)
+            provider: The provider to use ('bfl' or 'foundry', optional, will use from settings)
         """
-        self.api_key = api_key or settings.BFL_API_KEY
-        if not self.api_key:
-            raise ValueError("BFL API key must be provided")
+        self.provider = provider or settings.FLUX_MODEL_PROVIDER
         
-        self.base_url = "https://api.bfl.ml"
+        if self.provider == "foundry":
+            self.api_key = api_key or settings.FOUNDRY_API_KEY
+            self.base_url = settings.FOUNDRY_ENDPOINT
+            if not self.api_key or not self.base_url:
+                raise ValueError("Foundry API key and endpoint must be provided for foundry provider")
+            logger.info("Initialized Flux client with Foundry API")
+        else:
+            # Default to BFL
+            self.api_key = api_key or settings.BFL_API_KEY
+            self.base_url = "https://api.bfl.ml"
+            if not self.api_key:
+                raise ValueError("BFL API key must be provided")
+            logger.info("Initialized Flux client with BFL API")
+        
         self.headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
         }
-        logger.info("Initialized Flux client with BFL API")
 
     def generate_image(self, prompt: str, model: str = "flux-pro", **kwargs) -> dict:
         """
@@ -47,25 +59,38 @@ class FluxClient:
             **kwargs: Additional model-specific parameters
 
         Returns:
-            dict: Response from BFL API with task ID and other metadata
+            dict: Response from API with task ID and other metadata
         """
         try:
-            # Map model names to BFL API endpoints
-            model_endpoints = {
-                "flux-pro": "flux-pro",
-                "flux-pro-ultra": "flux-pro-ultra", 
-                "flux-kontext": "flux-kontext"
-            }
-            
-            if model not in model_endpoints:
-                raise ValueError(f"Unsupported model: {model}. Supported models: {list(model_endpoints.keys())}")
+            # Map model names to API endpoints based on provider
+            if self.provider == "foundry":
+                model_endpoints = {
+                    "flux-pro": "flux/generate",
+                    "flux-pro-ultra": "flux/generate", 
+                    "flux-kontext": "flux/edit"
+                }
+                endpoint = f"{self.base_url}/v1/{model_endpoints.get(model, 'flux/generate')}"
+            else:
+                # BFL endpoints
+                model_endpoints = {
+                    "flux-pro": "flux-pro",
+                    "flux-pro-ultra": "flux-pro-ultra", 
+                    "flux-kontext": "flux-kontext"
+                }
+                
+                if model not in model_endpoints:
+                    raise ValueError(f"Unsupported model: {model}. Supported models: {list(model_endpoints.keys())}")
 
-            endpoint = f"{self.base_url}/v1/{model_endpoints[model]}"
+                endpoint = f"{self.base_url}/v1/{model_endpoints[model]}"
             
             # Prepare request payload
             payload = {
                 "prompt": prompt
             }
+            
+            # Add provider-specific model parameter for Foundry
+            if self.provider == "foundry":
+                payload["model"] = model
             
             # Add model-specific parameters
             if model == "flux-pro":
@@ -76,7 +101,9 @@ class FluxClient:
                     "prompt_upsampling": kwargs.get("prompt_upsampling", False),
                     "seed": kwargs.get("seed"),
                     "safety_tolerance": kwargs.get("safety_tolerance", 2),
-                    "output_format": kwargs.get("output_format", "jpeg")
+                    "output_format": kwargs.get("output_format", "jpeg"),
+                    "webhook_url": kwargs.get("webhook_url"),
+                    "webhook_secret": kwargs.get("webhook_secret")
                 })
                 
             elif model == "flux-pro-ultra":
@@ -89,7 +116,9 @@ class FluxClient:
                     "output_format": kwargs.get("output_format", "jpeg"),
                     "raw": kwargs.get("raw", False),
                     "image_prompt": kwargs.get("image_prompt"),
-                    "image_prompt_strength": kwargs.get("image_prompt_strength", 0.1)
+                    "image_prompt_strength": kwargs.get("image_prompt_strength", 0.1),
+                    "webhook_url": kwargs.get("webhook_url"),
+                    "webhook_secret": kwargs.get("webhook_secret")
                 })
                 
             elif model == "flux-kontext":

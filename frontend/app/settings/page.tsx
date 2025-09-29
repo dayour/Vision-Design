@@ -20,7 +20,7 @@ import { Loader2, Check, AlertCircle, Plus, X, Shield } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { useImageSettings, BrandsProtectionMode } from "@/context/image-settings-context";
 import { useSearchParams } from "next/navigation";
-import { FadeScaleTransition } from "@/components/ui/page-transition";
+import { CliAuthStatus } from "@/components/CliAuthStatus";
 
 // No longer need video settings types
 
@@ -125,6 +125,7 @@ export default function SettingsPage() {
           <TabsList className="mb-6">
             <TabsTrigger value="brand">Brand Protection</TabsTrigger>
             <TabsTrigger value="custom-analysis">Custom Analysis</TabsTrigger>
+            <TabsTrigger value="authentication">Authentication</TabsTrigger>
             <TabsTrigger value="api">API Status</TabsTrigger>
           </TabsList>
 
@@ -333,6 +334,20 @@ export default function SettingsPage() {
                     </div>
                   </div>
                 </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+          
+          <TabsContent value="authentication" className="space-y-6">
+            <Card>
+              <CardHeader>
+                <CardTitle>CLI Authentication Status</CardTitle>
+                <CardDescription>
+                  Vision Design integrates with various CLI tools for streamlined development workflows
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <CliAuthStatus />
               </CardContent>
             </Card>
           </TabsContent>

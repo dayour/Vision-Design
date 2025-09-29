@@ -5,7 +5,7 @@ import os
 import logging
 import uvicorn
 from .core.config import settings
-from .api.endpoints import images, metadata_router, videos, gallery, env, flux
+from .api.endpoints import images, metadata_router, videos, gallery, env, flux, auth_status, dataverse
 
 # Configure logging to suppress Azure Blob Storage verbose logs
 logging.getLogger("azure.core.pipeline.policies.http_logging_policy").setLevel(
@@ -49,6 +49,12 @@ app.include_router(
 app.include_router(
     flux.router, prefix=f"{settings.API_V1_STR}", tags=["flux"]
 )
+app.include_router(
+    auth_status.router, prefix=f"{settings.API_V1_STR}", tags=["authentication"]
+)
+app.include_router(
+    dataverse.router, prefix=f"{settings.API_V1_STR}", tags=["dataverse"]
+)
 app.include_router(env.router, prefix=f"{settings.API_V1_STR}", tags=["env"])
 # app.include_router(organizer.router, prefix=f"{settings.API_V1_STR}/organizer", tags=["organizer"])
 # app.include_router(sora.router, prefix=f"{settings.API_V1_STR}/sora", tags=["sora"])
@@ -56,7 +62,7 @@ app.include_router(env.router, prefix=f"{settings.API_V1_STR}", tags=["env"])
 
 @app.get("/")
 def read_root():
-    return {"message": "Welcome to AI Content Lab API"}
+    return {"message": "Welcome to Vision Design API"}
 
 
 @app.get(f"{settings.API_V1_STR}/health")
