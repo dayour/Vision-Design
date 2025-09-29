@@ -193,7 +193,7 @@ export function AppSidebar() {
             <div className="flex items-center group-data-[collapsible=icon]:hidden">
               <Image 
                 src={logoSrc} 
-                alt="Visionary Lab" 
+                alt="Vision Design" 
                 width={30} 
                 height={30} 
                 className="mr-2"
@@ -205,12 +205,12 @@ export function AppSidebar() {
                   }
                 }}
               />
-              <h2 className="font-semibold text-lg">Visionary Lab</h2>
+              <h2 className="font-semibold text-lg">Vision Design</h2>
             </div>
             <div className="hidden group-data-[collapsible=icon]:flex items-center justify-center">
               <Image 
                 src={logoSrc} 
-                alt="Visionary Lab" 
+                alt="Vision Design" 
                 width={24} 
                 height={24}
                 onError={(e) => {
@@ -427,10 +427,15 @@ export function AppSidebar() {
       </SidebarContent>
       
       {/* Add a footer with theme toggle */}
-      <SidebarFooter className="p-4 group-data-[collapsible=icon]:p-2 border-t">
+      <SidebarFooter className="p-4 group-data-[collapsible=icon]:p-2 border-t space-y-2">
         <div className="flex items-center justify-between group-data-[collapsible=icon]:justify-center">
           <span className="text-sm text-muted-foreground group-data-[collapsible=icon]:hidden">Theme</span>
           <ThemeToggle />
+        </div>
+        <div className="group-data-[collapsible=icon]:hidden">
+          <Link href="/settings?tab=authentication" className="text-xs text-muted-foreground hover:text-foreground transition-colors">
+            🔧 CLI Authentication Setup
+          </Link>
         </div>
       </SidebarFooter>
     </Sidebar>

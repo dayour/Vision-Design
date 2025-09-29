@@ -2072,3 +2072,223 @@ export async function analyzeAndUpdateVideoMetadata(videoName: string): Promise<
     throw error;
   }
 } 
+
+// Authentication and CLI Integration APIs
+
+/**
+ * Get comprehensive authentication status for all CLI tools and services
+ */
+export async function getAuthenticationStatus(): Promise<{
+  success: boolean;
+  authentication_status: any;
+  error?: string;
+}> {
+  const url = `${API_BASE_URL}/auth/status`;
+  
+  if (API_DEBUG) {
+    console.log('Fetching authentication status');
+    console.log(`GET ${url}`);
+  }
+  
+  try {
+    const response = await fetch(url);
+    
+    if (API_DEBUG) {
+      console.log(`Response status: ${response.status} ${response.statusText}`);
+    }
+    
+    if (!response.ok) {
+      throw new Error(`Failed to get authentication status: ${response.status} ${response.statusText}`);
+    }
+    
+    const data = await response.json();
+    
+    if (API_DEBUG) {
+      console.log('Authentication status:', data);
+    }
+    
+    return data;
+  } catch (error) {
+    console.error('Error fetching authentication status:', error);
+    throw error;
+  }
+}
+
+/**
+ * Get setup instructions for CLI authentication methods
+ */
+export async function getSetupInstructions(): Promise<{
+  success: boolean;
+  setup_instructions: any;
+  error?: string;
+}> {
+  const url = `${API_BASE_URL}/auth/setup-instructions`;
+  
+  if (API_DEBUG) {
+    console.log('Fetching setup instructions');
+    console.log(`GET ${url}`);
+  }
+  
+  try {
+    const response = await fetch(url);
+    
+    if (!response.ok) {
+      throw new Error(`Failed to get setup instructions: ${response.status} ${response.statusText}`);
+    }
+    
+    const data = await response.json();
+    
+    if (API_DEBUG) {
+      console.log('Setup instructions:', data);
+    }
+    
+    return data;
+  } catch (error) {
+    console.error('Error fetching setup instructions:', error);
+    throw error;
+  }
+}
+
+// Dataverse Integration APIs
+
+/**
+ * Store image metadata in Dataverse
+ */
+export async function storeImageMetadataInDataverse(metadata: {
+  filename: string;
+  prompt: string;
+  model: string;
+  url: string;
+  file_hash?: string;
+  width?: number;
+  height?: number;
+  file_size?: number;
+  tags?: string[];
+  quality?: string;
+  seed?: number;
+  model_version?: string;
+  generation_settings?: any;
+}): Promise<{
+  success: boolean;
+  record_id?: string;
+  message: string;
+}> {
+  const url = `${API_BASE_URL}/dataverse/images`;
+  
+  if (API_DEBUG) {
+    console.log('Storing image metadata in Dataverse');
+    console.log(`POST ${url}`);
+    console.log('Metadata:', metadata);
+  }
+  
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(metadata),
+    });
+    
+    if (!response.ok) {
+      throw new Error(`Failed to store metadata: ${response.status} ${response.statusText}`);
+    }
+    
+    const data = await response.json();
+    
+    if (API_DEBUG) {
+      console.log('Dataverse storage response:', data);
+    }
+    
+    return data;
+  } catch (error) {
+    console.error('Error storing metadata in Dataverse:', error);
+    throw error;
+  }
+}
+
+/**
+ * Query images from Dataverse
+ */
+export async function queryImagesFromDataverse(filters?: {
+  model?: string;
+  prompt_contains?: string;
+  date_from?: string;
+  date_to?: string;
+  limit?: number;
+}): Promise<{
+  success: boolean;
+  images: any[];
+  count: number;
+}> {
+  const url = `${API_BASE_URL}/dataverse/images/query`;
+  
+  if (API_DEBUG) {
+    console.log('Querying images from Dataverse');
+    console.log(`POST ${url}`);
+    console.log('Filters:', filters);
+  }
+  
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(filters || {}),
+    });
+    
+    if (!response.ok) {
+      throw new Error(`Failed to query images: ${response.status} ${response.statusText}`);
+    }
+    
+    const data = await response.json();
+    
+    if (API_DEBUG) {
+      console.log('Dataverse query response:', data);
+    }
+    
+    return data;
+  } catch (error) {
+    console.error('Error querying images from Dataverse:', error);
+    throw error;
+  }
+}
+
+/**
+ * Get Dataverse connection status
+ */
+export async function getDataverseStatus(): Promise<{
+  enabled: boolean;
+  configured: boolean;
+  environment_url?: string;
+  table_name?: string;
+  message: string;
+  error?: string;
+}> {
+  const url = `${API_BASE_URL}/dataverse/status`;
+  
+  if (API_DEBUG) {
+    console.log('Getting Dataverse status');
+    console.log(`GET ${url}`);
+  }
+  
+  try {
+    const response = await fetch(url);
+    
+    if (!response.ok) {
+      throw new Error(`Failed to get Dataverse status: ${response.status} ${response.statusText}`);
+    }
+    
+    const data = await response.json();
+    
+    if (API_DEBUG) {
+      console.log('Dataverse status:', data);
+    }
+    
+    return data;
+  } catch (error) {
+    console.error('Error getting Dataverse status:', error);
+    throw error;
+  }
+}
