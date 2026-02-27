@@ -39,10 +39,10 @@ async def get_authentication_status() -> Dict[str, Any]:
         }
         
     except Exception as e:
-        logger.error(f"Error getting authentication status: {e}")
+        logger.error(f"Error getting authentication status: {e}", exc_info=True)
         return {
             "success": False,
-            "error": str(e),
+            "error": "Failed to retrieve authentication status",
             "authentication_status": {}
         }
 
@@ -65,10 +65,10 @@ async def get_setup_instructions() -> Dict[str, Any]:
         }
         
     except Exception as e:
-        logger.error(f"Error getting setup instructions: {e}")
+        logger.error(f"Error getting setup instructions: {e}", exc_info=True)
         return {
             "success": False,
-            "error": str(e),
+            "error": "Failed to retrieve setup instructions",
             "setup_instructions": {}
         }
 
@@ -91,10 +91,10 @@ async def initiate_azure_login() -> Dict[str, Any]:
         }
         
     except Exception as e:
-        logger.error(f"Error during Azure authentication: {e}")
+        logger.error(f"Error during Azure authentication: {e}", exc_info=True)
         return {
             "success": False,
-            "error": str(e),
+            "error": "Authentication failed",
             "message": "Azure authentication error"
         }
 
@@ -120,9 +120,9 @@ async def connect_power_platform(environment_url: str) -> Dict[str, Any]:
         }
         
     except Exception as e:
-        logger.error(f"Error connecting to Power Platform: {e}")
+        logger.error(f"Error connecting to Power Platform: {e}", exc_info=True)
         return {
             "success": False,
-            "error": str(e),
+            "error": "Connection failed",
             "message": "Power Platform connection error"
         }
