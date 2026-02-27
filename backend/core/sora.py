@@ -167,7 +167,12 @@ class Sora:
         # Create directory if it doesn't exist
         os.makedirs(target_folder, exist_ok=True)
 
-        file_path = os.path.join(target_folder, file_name)
+        # Sanitize file_name to prevent path traversal
+        safe_name = os.path.basename(file_name)
+        if not safe_name or safe_name != file_name:
+            logger.warning(f"Rejected potentially unsafe filename: {file_name}")
+            safe_name = f"video_{generation_id}.mp4"
+        file_path = os.path.join(target_folder, safe_name)
 
         logger.info(
             f"Downloading video content for generation {generation_id} to {file_path}")
