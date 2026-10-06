@@ -3,57 +3,21 @@
  */
 
 /**
- * Check if a URL is from Azure Blob Storage
- */
-export function isAzureBlobStorageUrl(url: string): boolean {
-  return url.includes('.blob.core.windows.net');
-}
-
-/**
- * Check if an image URL is from an external source (primarily Azure)
+ * Check if an image URL is from an external source
  */
 export function isExternalImageUrl(url: string): boolean {
   // Check if it's a full URL (starts with http/https)
-  if (url.startsWith('http://') || url.startsWith('https://')) {
-    return true;
-  }
-  
-  // Primarily check for Azure Blob Storage
-  return isAzureBlobStorageUrl(url);
-}
-
-
-
-/**
- * Extract the storage account name from an Azure Blob Storage URL
- */
-export function extractStorageAccountName(url: string): string | null {
-  const match = url.match(/https?:\/\/([^.]+)\.blob\.core\.windows\.net/);
-  return match ? match[1] : null;
+  return url.startsWith('http://') || url.startsWith('https://');
 }
 
 /**
- * Extract container name from Azure Blob Storage URL
+ * Check if URL is from our API (Dataverse content endpoint)
  */
-export function extractContainerName(url: string): string | null {
-  const match = url.match(/https?:\/\/[^.]+\.blob\.core\.windows\.net\/([^\/\?]+)/);
-  return match ? match[1] : null;
+export function isDataverseContentUrl(url: string): boolean {
+  return url.includes('/api/v1/gallery/assets/') && url.includes('/content');
 }
 
-/**
- * Check if Azure Blob URL has SAS token
- */
-export function hasAzureSasToken(url: string): boolean {
-  return url.includes('?') && (url.includes('sv=') || url.includes('sig='));
-}
 
-/**
- * Get Azure Blob Storage URL without SAS token (for caching keys)
- */
-export function getAzureBlobBaseUrl(url: string): string {
-  if (!isAzureBlobStorageUrl(url)) return url;
-  return url.split('?')[0];
-}
 
 /**
  * Get optimal image sizes based on the container and device

@@ -1,6 +1,7 @@
 from pydantic_settings import BaseSettings
 from typing import List, Optional
 from pydantic import Extra, Field, validator
+from pathlib import Path
 
 
 class Settings(BaseSettings):
@@ -43,49 +44,37 @@ class Settings(BaseSettings):
     # Foundry API for Flux Models (alternative hosting)
     FOUNDRY_API_KEY: Optional[str] = None  # Foundry API key for hosted Flux models
     FOUNDRY_ENDPOINT: Optional[str] = None  # Foundry API endpoint URL
+    # Optional, full endpoints for specific Flux deployments (if Foundry uses direct OpenAI-style deployment URLs)
+    FOUNDRY_DEPLOYMENT_FLUX_PRO: Optional[str] = None
+    FOUNDRY_FLUX_PRO_ENDPOINT: Optional[str] = None
+    FOUNDRY_DEPLOYMENT_FLUX_KONTEXT: Optional[str] = None
+    FOUNDRY_FLUX_KONTEXT_ENDPOINT: Optional[str] = None
     FLUX_MODEL_PROVIDER: str = "bfl"  # Model provider: 'bfl' or 'foundry'
 
-    # Azure Blob Storage Settings
-    # Option 1: Connection string (deprecated)
-    AZURE_STORAGE_CONNECTION_STRING: Optional[str] = None
-
-    # Option 2: Individual credential components (preferred)
-    # https://<account>.blob.core.windows.net/
-    AZURE_BLOB_SERVICE_URL: Optional[str] = None
-    AZURE_STORAGE_ACCOUNT_NAME: Optional[str] = None  # Storage account name
-    AZURE_STORAGE_ACCOUNT_KEY: Optional[str] = None  # Storage account key
-
-    # Container names
-    AZURE_BLOB_IMAGE_CONTAINER: str = "images"  # Container name for images
-    AZURE_BLOB_VIDEO_CONTAINER: str = "videos"  # Container name for videos
-
-    # CORS Configuration
+    # Microsoft Dataverse Settings (Primary metadata and storage)
+    DATAVERSE_ENVIRONMENT_URL: Optional[str] = None  # e.g., https://org.crm.dynamics.com/
+    DATAVERSE_CLIENT_ID: Optional[str] = None  # Azure AD app client ID
+    DATAVERSE_CLIENT_SECRET: Optional[str] = None  # Azure AD app client secret
+    AZURE_TENANT_ID: Optional[str] = None  # Optional tenant for client credentials auth
+    DATAVERSE_TABLE_VISIONASSETS: str = "dystudio_visionassets"
+    DATAVERSE_TABLE_ASSETTAGS: str = "dystudio_assettags"
+    DATAVERSE_TABLE_GENERATIONHISTORY: str = "dystudio_generationhistories"
+    DATAVERSE_USE_MANAGED_IDENTITY: bool = True
+    DATAVERSE_API_VERSION: str = "9.2"
+    DATAVERSE_FIELD_PREFIX: str = "dystudio"  # Dataverse custom field prefix
+    DATAVERSE_USE_PAC_AUTH: bool = True  # Reuse PAC CLI tokens when available
+    DATAVERSE_PAC_PROFILE: Optional[str] = None  # Optional PAC profile hint
+    
+    # CORS Configuration  
     CORS_ALLOWED_ORIGINS: str = Field(
         default="*",
         description="Comma-separated list of allowed CORS origins, or * for all origins"
     )
-
-    # Azure Cosmos DB Settings
-    AZURE_COSMOS_DB_ENDPOINT: Optional[str] = None  # Cosmos DB endpoint URL
-    AZURE_COSMOS_DB_KEY: Optional[str] = None  # Cosmos DB primary key
-    AZURE_COSMOS_DB_ID: str = "visiondesign"  # Database name (updated from visionarylab)
-    AZURE_COSMOS_CONTAINER_ID: str = "metadata"  # Container name for metadata
-
-    # Microsoft Dataverse Settings  
-    DATAVERSE_ENVIRONMENT_URL: Optional[str] = None  # Dataverse environment URL
-    DATAVERSE_CLIENT_ID: Optional[str] = None  # Azure AD app registration client ID
-    DATAVERSE_CLIENT_SECRET: Optional[str] = None  # Azure AD app registration client secret  
-    DATAVERSE_TABLE_NAME: str = "cr6f1_visionassets"  # Custom table name for image metadata
     
     # GitHub Integration
     GITHUB_TOKEN: Optional[str] = None  # GitHub personal access token
     GITHUB_REPO_OWNER: Optional[str] = None  # Repository owner for integration
     GITHUB_REPO_NAME: Optional[str] = None  # Repository name for integration
-
-    # Alternative: Managed Identity settings (for Azure-hosted deployments)
-    USE_MANAGED_IDENTITY: bool = (
-        True  # Default to managed identity for enhanced security
-    )
 
     # Azure OpenAI API Version
     # API version for Azure OpenAI services
@@ -106,7 +95,7 @@ class Settings(BaseSettings):
 
     @validator('CORS_ALLOWED_ORIGINS')
     def validate_cors_origins(cls, v):
-        """Validate CORS origins configuration to prevent Azure InvalidXmlNodeValue errors"""
+        """Validate CORS origins configuration to prevent InvalidXmlNodeValue errors"""
         if v == "*":
             return v
         
@@ -128,7 +117,9 @@ class Settings(BaseSettings):
         return v
 
     class Config:
-        env_file = "../.env"
+        # Look for .env file in project root (parent of backend directory)
+        env_file = str(Path(__file__).parent.parent.parent / ".env")
+        env_file_encoding = "utf-8"
         case_sensitive = True
         extra = Extra.allow
 

@@ -164,7 +164,7 @@ export function ImageGalleryCard({ image, index, onClick, onDelete, onMove }: Im
 
     try {
       setIsDeleting(true);
-      const result = await deleteGalleryAsset(image.name, MediaType.IMAGE);
+      const result = await deleteGalleryAsset(image.id);
       
       if (result.success) {
         toast.success("Image deleted", {
@@ -214,7 +214,7 @@ export function ImageGalleryCard({ image, index, onClick, onDelete, onMove }: Im
 
     try {
       setIsMoving(true);
-      const result = await moveAsset(image.name, folderPath, MediaType.IMAGE);
+      const result = await moveAsset(image.id, folderPath);
       
       if (result.success) {
         toast.success("Image moved", {

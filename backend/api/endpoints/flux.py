@@ -274,3 +274,44 @@ async def generate_flux_image_async(request: FluxGenerationRequest):
     except Exception as e:
         logger.error(f"Error starting Flux generation: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to start generation: {str(e)}")
+
+
+@router.get("/flux/health")
+async def flux_health_check():
+    """Lightweight health check for the configured Flux/Foundry provider.
+
+    Returns basic information about whether Flux client is configured and a simple reachability check
+    to the configured Foundry endpoint (if provider is 'foundry'). This endpoint never returns API keys.
+    """
+    try:
+        provider = settings.FLUX_MODEL_PROVIDER or 'bfl'
+        configured = False
+        reachable = False
+        endpoint = None
+
+        if provider == 'foundry':
+            endpoint = settings.FOUNDRY_ENDPOINT or settings.FOUNDRY_FLUX_PRO_ENDPOINT or None
+            configured = bool(settings.FOUNDRY_API_KEY and endpoint)
+            # Attempt a lightweight HEAD request to the endpoint to check reachability
+            if endpoint and configured:
+                try:
+                    import requests
+                    # Use a short timeout and do not include the API key in any returned data
+                    resp = requests.head(endpoint, timeout=3)
+                    reachable = resp.status_code < 500
+                except Exception:
+                    reachable = False
+        else:
+            # For BFL, we can only check that environment API key is present
+            configured = bool(settings.BFL_API_KEY)
+
+        return {
+            "success": True,
+            "provider": provider,
+            "configured": configured,
+            "endpoint": endpoint if endpoint else None,
+            "reachable": reachable,
+        }
+    except Exception as e:
+        logger.error(f"Error during flux health check: {e}")
+        raise HTTPException(status_code=500, detail="Flux health check failed")

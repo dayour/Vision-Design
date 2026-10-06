@@ -2,7 +2,7 @@
 
 import Image from 'next/image';
 import { useState, forwardRef } from 'react';
-import { isExternalImageUrl, getFallbackImageUrl, type ImageLoadingType, IMAGE_LOADING_CONFIG } from '@/utils/image-utils';
+import { isExternalImageUrl, isDataverseContentUrl, getFallbackImageUrl, type ImageLoadingType, IMAGE_LOADING_CONFIG } from '@/utils/image-utils';
 
 interface OptimizedImageProps {
   src: string;
@@ -19,7 +19,7 @@ interface OptimizedImageProps {
   quality?: number;
 }
 
-// Custom image component that handles external URLs gracefully
+// Custom image component that handles Dataverse and external URLs gracefully
 export const OptimizedImage = forwardRef<HTMLImageElement, OptimizedImageProps>(
   ({ 
     src, 
@@ -44,9 +44,9 @@ export const OptimizedImage = forwardRef<HTMLImageElement, OptimizedImageProps>(
     const finalPriority = priority !== undefined ? priority : loadingConfig.priority;
     const finalQuality = quality || loadingConfig.quality;
     
-    // Check if the image is from an external source or has SAS tokens
+    // Check if the image is from Dataverse content endpoint or external source
+    const isDataverseContent = isDataverseContentUrl(src);
     const isExternal = isExternalImageUrl(src);
-    const hasSasToken = src.includes('?sv=') || src.includes('?sig=');
     
     // Handle image error
     const handleError = () => {
@@ -68,8 +68,9 @@ export const OptimizedImage = forwardRef<HTMLImageElement, OptimizedImageProps>(
       ? getFallbackImageUrl(width || 400, height || 300)
       : src;
     
-    // If it's an external image or has SAS tokens, use unoptimized
-    if (isExternal || hasSasToken) {
+    // For Dataverse content URLs or external images, use unoptimized
+    // This is safer for dynamically served content
+    if (isDataverseContent || isExternal) {
       const safeWidth = !fill ? (width || 1024) : undefined;
       const safeHeight = !fill ? (height || 1024) : undefined;
       
@@ -92,7 +93,7 @@ export const OptimizedImage = forwardRef<HTMLImageElement, OptimizedImageProps>(
       );
     }
     
-    // For internal images without SAS tokens, use optimized version
+    // For other internal images, use optimized version
     const safeWidth = !fill ? (width || 1024) : undefined;
     const safeHeight = !fill ? (height || 1024) : undefined;
     

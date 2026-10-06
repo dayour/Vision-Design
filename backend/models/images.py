@@ -218,7 +218,7 @@ class ImageGenerationResponse(BaseResponse):
 
 
 class ImageSaveRequest(BaseModel):
-    """Request model for saving generated images to blob storage"""
+    """Request model for saving generated images to Dataverse"""
 
     generation_response: ImageGenerationResponse = Field(
         ..., description="Response from the image generation API to save"
@@ -350,7 +350,7 @@ class ImageAnalyzeRequest(BaseModel):
     """Request model for analyzing an image"""
     image_path: Optional[str] = Field(
         None,
-        description="Path to the image file on Azure Blob Storage. Supports a full URL with or without a SAS token."
+        description="Path to the image file on Dataverse. Supports a full URL with or without a SAS token."
     )
     base64_image: Optional[str] = Field(
         None,
@@ -371,7 +371,7 @@ class ImageAnalyzeCustomRequest(BaseModel):
     """Request model for analyzing an image with a custom prompt"""
     image_path: Optional[str] = Field(
         None,
-        description="Path to the image file on Azure Blob Storage. Supports a full URL with or without a SAS token."
+        description="Path to the image file on Dataverse. Supports a full URL with or without a SAS token."
     )
     base64_image: Optional[str] = Field(
         None,
@@ -438,7 +438,7 @@ class PipelineSaveOptions(BaseModel):
         None, description="Override background metadata for saved images"
     )
     metadata: Optional[Dict[str, Any]] = Field(
-        None, description="Additional metadata merged into Cosmos DB records"
+        None, description="Additional metadata merged into Dataverse records"
     )
 
 

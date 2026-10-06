@@ -10,6 +10,7 @@ from datetime import datetime
 import requests
 from azure.identity import DefaultAzureCredential, ClientSecretCredential
 from .config import settings
+from .pac_cli import try_acquire_pac_cli_token
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,17 @@ class DataverseClient:
             return None
             
         try:
+            pac_token = None
+            if settings.DATAVERSE_USE_PAC_AUTH:
+                pac_token = try_acquire_pac_cli_token(
+                    environment_url=self.environment_url,
+                    profile_hint=settings.DATAVERSE_PAC_PROFILE,
+                )
+            if pac_token:
+                self.token = pac_token.access_token
+                self.token_expires = int(pac_token.expires_on.timestamp())
+                return self.token
+
             # Use client credentials flow for service-to-service authentication
             if self.client_id and self.client_secret:
                 credential = ClientSecretCredential(
@@ -60,7 +72,7 @@ class DataverseClient:
                 )
             else:
                 # Fall back to default credential (managed identity, Azure CLI, etc.)
-                credential = DefaultAzureCredential()
+                credential = DefaultAzureCredential(exclude_interactive_browser_credential=True)
             
             # Get token for Dataverse
             token_result = credential.get_token(f"{self.environment_url}/.default")
@@ -119,6 +131,134 @@ class DataverseClient:
         except Exception as e:
             logger.error(f"Error checking Dataverse table existence: {e}")
             return False
+
+    def _create_entity(self, schema_name: str, display_name: str, collection_name: str, ownership: str = "UserOwned") -> Optional[str]:
+        """Create an entity (table) in Dataverse using the Web API.
+
+        Returns the created entity logical name or None on failure.
+        """
+        try:
+            body = {
+                "SchemaName": schema_name,
+                "DisplayName": {"LocalizedLabels": [{"Label": display_name, "LanguageCode": 1033}]},
+                "DisplayCollectionName": {"LocalizedLabels": [{"Label": collection_name, "LanguageCode": 1033}]},
+                "OwnershipType": ownership,
+                "IsActivity": False
+            }
+
+            response = requests.post(
+                f"{self.api_url}/EntityDefinitions",
+                headers=self._get_headers(),
+                json=body
+            )
+
+            if response.status_code in (200, 201, 204):
+                logger.info(f"Created entity '{schema_name}' successfully.")
+                return schema_name
+            else:
+                logger.error(f"Failed to create entity '{schema_name}': {response.status_code} - {response.text}")
+                return None
+        except Exception as e:
+            logger.error(f"Exception while creating entity '{schema_name}': {e}")
+            return None
+
+    def _create_string_attribute(self, entity_logical_name: str, schema_name: str, display_name: str, max_length: int = 100) -> bool:
+        """Create a single-line string attribute on an entity."""
+        try:
+            body = {
+                "@odata.type": "Microsoft.Dynamics.CRM.StringAttributeMetadata",
+                "SchemaName": schema_name,
+                "DisplayName": {"LocalizedLabels": [{"Label": display_name, "LanguageCode": 1033}]},
+                "RequiredLevel": {"Value": "None"},
+                "MaxLength": max_length
+            }
+
+            response = requests.post(
+                f"{self.api_url}/AttributeDefinitions",
+                headers=self._get_headers(),
+                json={
+                    **body,
+                    # Attach the attribute to the specified entity
+                    "EntityLogicalName": entity_logical_name
+                }
+            )
+
+            if response.status_code in (200, 201, 204):
+                logger.info(f"Created string attribute '{schema_name}' on '{entity_logical_name}'")
+                return True
+            else:
+                logger.error(f"Failed to create attribute '{schema_name}': {response.status_code} - {response.text}")
+                return False
+
+        except Exception as e:
+            logger.error(f"Exception while creating attribute '{schema_name}': {e}")
+            return False
+
+    def create_tables_if_missing(self) -> Dict[str, Any]:
+        """Attempt to create the vision assets and generation history tables (and basic attributes).
+
+        This operation requires sufficient Dataverse privileges and may fail in non-admin accounts.
+        The method will try to create minimal tables and attributes and return a summary of results.
+        """
+        results = {
+            "vision_assets": {"created": False, "details": None},
+            "generation_history": {"created": False, "details": None}
+        }
+
+        if not self.enabled:
+            results["error"] = "Dataverse client not enabled or not configured"
+            return results
+
+        try:
+            # First, check whether vision assets table already exists
+            exists = self._ensure_table_exists()
+            if exists:
+                results["vision_assets"]["created"] = False
+                results["vision_assets"]["details"] = "Already exists"
+            else:
+                schema_name = self.table_name.replace("_", "_").title().replace("Cr6f1", "cr6f1_")
+                # Use a predictable schema name like cr6f1_VisionAsset
+                schema_name = "cr6f1_VisionAsset"
+                created = self._create_entity(schema_name, "Vision Asset", "Vision Assets")
+                if created:
+                    # Create basic attributes
+                    self._create_string_attribute(self.table_name, "cr6f1_name", "Name", max_length=150)
+                    self._create_string_attribute(self.table_name, "cr6f1_imageurl", "Image URL", max_length=1000)
+                    self._create_string_attribute(self.table_name, "cr6f1_prompt", "Prompt", max_length=2000)
+                    self._create_string_attribute(self.table_name, "cr6f1_model", "Model", max_length=200)
+                    results["vision_assets"]["created"] = True
+                    results["vision_assets"]["details"] = f"Created entity {schema_name} and basic attributes"
+                else:
+                    results["vision_assets"]["details"] = "Failed to create entity (check permissions)"
+
+            # Now attempt generation history table
+            history_logical = f"{self.table_name}_generationhistory"
+            # Check existence
+            response = requests.get(
+                f"{self.api_url}/EntityDefinitions",
+                headers=self._get_headers(),
+                params={"$filter": f"LogicalName eq '{history_logical}'"}
+            )
+            if response.status_code == 200 and response.json().get("value", []):
+                results["generation_history"]["created"] = False
+                results["generation_history"]["details"] = "Already exists"
+            else:
+                schema_name = "cr6f1_GenerationHistory"
+                created = self._create_entity(schema_name, "Generation History", "Generation Histories")
+                if created:
+                    self._create_string_attribute(history_logical, "cr6f1_prompt", "Prompt", max_length=2000)
+                    self._create_string_attribute(history_logical, "cr6f1_model", "Model", max_length=200)
+                    # Note: creating lookups and relationships requires more complex metadata calls; skip for now
+                    results["generation_history"]["created"] = True
+                    results["generation_history"]["details"] = f"Created entity {schema_name} with basic attributes"
+                else:
+                    results["generation_history"]["details"] = "Failed to create generation history entity (check permissions)"
+
+        except Exception as e:
+            logger.error(f"Error while attempting to create tables: {e}")
+            results["error"] = str(e)
+
+        return results
 
     def store_image_metadata(self, metadata: Dict[str, Any]) -> Optional[str]:
         """

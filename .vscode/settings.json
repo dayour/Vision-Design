@@ -1,0 +1,28 @@
+{
+  "typescript.enablePromptUseWorkspaceTsdk": false,
+  "eslint.workingDirectories": [
+    { "mode": "auto" }
+  ],
+  "typescript.preferences.importModuleSpecifier": "relative",
+  "typescript.tsserver.trace": "off",
+  "typescript.validate.enable": true,
+  "files.watcherExclude": {
+    "**/node_modules": true,
+    "**/.next": true
+  },
+  "files.exclude": {
+    "**/node_modules": true,
+    "**/.next": true,
+    "**/node_modules/**/tsconfig.json": true,
+    "**/node_modules/**/.*/**": true
+  },
+  "search.exclude": {
+    "**/node_modules/**/tsconfig.json": true,
+    "**/.next": true
+  },
+  "css.lint.unknownAtRules": "ignore",
+  "scss.lint.unknownAtRules": "ignore",
+  "less.lint.unknownAtRules": "ignore",
+  "python-envs.defaultEnvManager": "ms-python.python:system",
+  "python-envs.pythonProjects": []
+}

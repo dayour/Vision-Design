@@ -346,16 +346,16 @@ export function VideoDetailView({
 
   // Handle video deletion
   const handleDelete = async () => {
-    if (!video || !video.name) {
+    if (!video || !video.id) {
       toast.error("Cannot delete video", {
-        description: "Missing video information"
+        description: "Missing video identifier"
       });
       return;
     }
 
     try {
       setIsDeleting(true);
-      const result = await deleteGalleryAsset(video.name, MediaType.VIDEO);
+      const result = await deleteGalleryAsset(video.id);
       
       if (result.success) {
         toast.success("Video deleted", {
@@ -407,9 +407,9 @@ export function VideoDetailView({
 
   // Update handleAnalyze to save results to metadata
   const handleAnalyze = async () => {
-    if (!video || !video.name) {
+    if (!video || !video.id || !video.src) {
       toast.error("Cannot analyze video", {
-        description: "Missing video information"
+        description: "Missing video identifier"
       });
       return;
     }
@@ -421,7 +421,7 @@ export function VideoDetailView({
       });
       
       // Use the combined analyze and update function
-      const result = await analyzeAndUpdateVideoMetadata(video.name);
+      const result = await analyzeAndUpdateVideoMetadata(video.id, video.src);
       setAnalysisResult(result.analysis);
       
       toast.success("Video analysis complete", {
@@ -467,7 +467,7 @@ export function VideoDetailView({
 
   // Handle moving the video to a folder
   const handleMove = async (folderPath: string) => {
-    if (!video || !video.name) {
+    if (!video || !video.id) {
       toast.error("Cannot move video", {
         description: "Missing video information"
       });
@@ -476,7 +476,7 @@ export function VideoDetailView({
 
     try {
       setIsMoving(true);
-      const result = await moveAsset(video.name, folderPath, MediaType.VIDEO);
+      const result = await moveAsset(video.id, folderPath);
       
       if (result.success) {
         toast.success("Video moved", {

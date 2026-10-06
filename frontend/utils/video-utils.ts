@@ -1,8 +1,8 @@
 /**
- * Utility functions for handling video URLs and optimization (Azure Blob Storage focused)
+ * Utility functions for handling video URLs and optimization for Dataverse
  */
 
-import { isAzureBlobStorageUrl, getAzureBlobBaseUrl, hasAzureSasToken } from './image-utils';
+import { isDataverseContentUrl } from './image-utils';
 
 /**
  * Supported video formats for different use cases

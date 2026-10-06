@@ -8,6 +8,7 @@
     "build:analyze": "ANALYZE=true next build",
     "start": "next start",
     "lint": "next lint",
+    "test:unit": "vitest",
     "analyze": "cross-env ANALYZE=true next build",
     "lighthouse": "lighthouse http://localhost:3000 --output html --output-path ./lighthouse-report.html"
   },
@@ -55,6 +56,7 @@
     "tw-animate-css": "^1.2.5"
   },
   "devDependencies": {
+    "vitest": "^1.0.0",
     "@eslint/eslintrc": "^3",
     "@next/bundle-analyzer": "^15.2.4",
     "@tailwindcss/postcss": "^4",

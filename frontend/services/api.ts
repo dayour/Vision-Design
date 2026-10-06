@@ -36,6 +36,66 @@ console.log(`- NEXT_PUBLIC_API_PORT: ${process.env.NEXT_PUBLIC_API_PORT || 'not 
 // Enable debug mode to log API requests
 const API_DEBUG = process.env.NEXT_PUBLIC_DEBUG_MODE === 'true';
 
+const fluxProvider = (process.env.NEXT_PUBLIC_FLUX_MODEL_PROVIDER || '').toLowerCase();
+const resolvedDefaultImageModel = (process.env.NEXT_PUBLIC_DEFAULT_IMAGE_MODEL || '').trim()
+  || ((fluxProvider === 'foundry' || fluxProvider === 'bfl') ? 'flux-pro' : 'gpt-image-1');
+
+export const DEFAULT_IMAGE_MODEL = resolvedDefaultImageModel;
+
+const clientCreatedFolders = new Set<string>();
+
+// Enhanced fetch with better error handling and timeout
+export async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs = 30000) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+    
+    clearTimeout(timeoutId);
+    
+    if (!response.ok) {
+      let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+      try {
+        const errorData = await response.text();
+        if (errorData) {
+          errorMessage += ` - ${errorData}`;
+        }
+      } catch {
+        // Ignore error text parsing failures
+      }
+      throw new Error(errorMessage);
+    }
+    
+    return response;
+  } catch (error) {
+    clearTimeout(timeoutId);
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new Error(`Request timeout after ${timeoutMs}ms`);
+    }
+    throw error;
+  }
+}
+
+// Export public flux/foundry configuration to be used by UI components
+export const FLUX_MODEL_PROVIDER = fluxProvider;
+export const FOUNDRY_ENDPOINT = process.env.NEXT_PUBLIC_FOUNDRY_ENDPOINT || process.env.FOUNDRY_ENDPOINT || '';
+export const FOUNDRY_FLUX_PRO_ENDPOINT = process.env.NEXT_PUBLIC_FOUNDRY_FLUX_PRO_ENDPOINT || process.env.FOUNDRY_FLUX_PRO_ENDPOINT || '';
+export const FOUNDRY_FLUX_KONTEXT_ENDPOINT = process.env.NEXT_PUBLIC_FOUNDRY_FLUX_KONTEXT_ENDPOINT || process.env.FOUNDRY_FLUX_KONTEXT_ENDPOINT || '';
+export const FOUNDRY_DEPLOYMENT_FLUX_PRO = process.env.NEXT_PUBLIC_FOUNDRY_DEPLOYMENT_FLUX_PRO || process.env.FOUNDRY_DEPLOYMENT_FLUX_PRO || '';
+export const FOUNDRY_DEPLOYMENT_FLUX_KONTEXT = process.env.NEXT_PUBLIC_FOUNDRY_DEPLOYMENT_FLUX_KONTEXT || process.env.FOUNDRY_DEPLOYMENT_FLUX_KONTEXT || '';
+
+/**
+ * Small helper to resolve the default image model given a flux provider and optional override.
+ * - If an explicit defaultImageModelInput is provided, return it.
+ * - If flux provider is 'foundry' or 'bfl', prefer 'flux-pro'
+ * - Otherwise fall back to 'gpt-image-1'
+ */
+export { resolveDefaultImageModel } from './defaultModel';
+
 // Types for API requests and responses
 export interface VideoGenerationRequest {
   prompt: string;
@@ -105,21 +165,19 @@ export interface GalleryResponse {
 }
 
 export interface GalleryUploadResponse {
-  success: boolean;
-  message: string;
-  file_id: string;
-  blob_name: string;
-  container: string;
-  url: string;
-  size: number;
-  content_type: string;
-  original_filename: string;
-  metadata?: Record<string, string>;
-}
+    success: boolean;
+    message: string;
+    asset_id?: string;
+    file_id?: string;
+    blob_name?: string;
+    container?: string;
+    url: string;
+    size?: number;
+    content_type?: string;
+    original_filename?: string;
+    metadata?: Record<string, string>;
+  }
 
-/**
- * Interface for video/image metadata
- */
 export interface AssetMetadata {
   [key: string]: string | number | boolean | string[] | object | undefined;
   analysis?: {
@@ -803,17 +861,12 @@ export async function fetchGalleryImages(
  * Delete an asset from the gallery
  */
 export async function deleteGalleryAsset(
-  blobName: string, 
-  mediaType: MediaType
+  assetId: string
 ): Promise<{success: boolean, message: string}> {
-  const params = new URLSearchParams();
-  params.append('blob_name', blobName);
-  params.append('media_type', mediaType);
-
-  const url = `${API_BASE_URL}/gallery/delete?${params.toString()}`;
+  const url = `${API_BASE_URL}/gallery/assets/${assetId}`;
   
   if (API_DEBUG) {
-    console.log(`Deleting gallery asset: ${blobName}`);
+    console.log(`Deleting gallery asset: ${assetId}`);
     console.log(`DELETE ${url}`);
   }
   
@@ -839,7 +892,10 @@ export async function deleteGalleryAsset(
       console.log('Response data:', data);
     }
     
-    return data;
+    return {
+      success: data.success ?? true,
+      message: data.message ?? 'Asset deleted successfully'
+    };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     console.error(`Network error when deleting gallery asset: ${errorMessage}`);
@@ -878,106 +934,65 @@ export interface VideoGenerationWithAnalysisResponse {
 /**
  * Analyze a video using AI
  */
-export async function analyzeVideo(videoName: string, retries = 3): Promise<VideoAnalysisResponse> {
+export async function analyzeVideo(videoPath: string, retries = 3): Promise<VideoAnalysisResponse> {
   const url = `${API_BASE_URL}/videos/analyze`;
   
   if (API_DEBUG) {
-    console.log(`Analyzing video with name: ${videoName}`);
+    console.log(`Analyzing video at path: ${videoPath}`);
     console.log(`POST ${url}`);
   }
   
   let attempt = 0;
   let lastError: Error | null = null;
   
-  try {
-    // First, get the SAS tokens to construct the full URL properly
-    const sasTokensResponse = await fetch(`${API_BASE_URL}/gallery/sas-tokens`);
-    
-    if (!sasTokensResponse.ok) {
-      throw new Error(`Failed to get SAS tokens: ${sasTokensResponse.status} ${sasTokensResponse.statusText}`);
-    }
-    
-    const sasTokens = await sasTokensResponse.json();
-    
-    // Check if we have the video container URL
-    if (!sasTokens.video_container_url) {
-      console.error('Missing required video_container_url from SAS tokens:', sasTokens);
-      throw new Error('Missing required video container URL from SAS tokens');
-    }
-    
-    // Use the actual video_container_url from the SAS tokens response
-    const videoContainerUrl = sasTokens.video_container_url;
-    const videoSasToken = sasTokens.video_sas_token;
-    
-    // Construct a proper Azure blob storage URL
-    const videoPath = `${videoContainerUrl}/${videoName}${videoSasToken ? `?${videoSasToken}` : ''}`;
-    
-    if (API_DEBUG) {
-      console.log(`Constructed video path for analysis: ${videoPath}`);
-    }
-    
-    while (attempt < retries) {
-      try {
-        attempt++;
-        
-        if (attempt > 1) {
-          console.log(`Retry attempt ${attempt}/${retries} for video analysis`);
-        }
-        
-        // Add a timeout to prevent hanging requests
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 60000); // 60 second timeout
-        
-        const response = await fetch(url, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ video_path: videoPath }),
-          signal: controller.signal
-        });
-        
-        // Clear the timeout
-        clearTimeout(timeoutId);
-        
-        if (API_DEBUG) {
-          console.log(`Response status: ${response.status} ${response.statusText}`);
-          if (!response.ok) {
-            console.error('Error response:', await response.text().catch(() => 'Could not read response text'));
-          }
-        }
-        
-        if (!response.ok) {
-          throw new Error(`Failed to analyze video: ${response.status} ${response.statusText}`);
-        }
-        
-        const data = await response.json();
-        
-        if (API_DEBUG) {
-          console.log('Analysis response data:', data);
-        }
-        
-        return data;
-      } catch (error) {
-        console.error(`Video analysis attempt ${attempt}/${retries} failed:`, error);
-        lastError = error instanceof Error ? error : new Error(String(error));
-        
-        // If it's the last attempt, throw the error
-        if (attempt >= retries) {
-          throw lastError;
-        }
-        
-        // Wait before retrying - increasing delay between retries
-        await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+  while (attempt < retries) {
+    try {
+      attempt++;
+      
+      if (attempt > 1 && API_DEBUG) {
+        console.log(`Retry attempt ${attempt}/${retries} for video analysis`);
       }
+      
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 60000);
+      
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ video_path: videoPath }),
+        signal: controller.signal
+      });
+      
+      clearTimeout(timeoutId);
+      
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => '');
+        throw new Error(`Failed to analyze video: ${response.status} ${response.statusText}${errorText ? ` - ${errorText}` : ''}`);
+      }
+      
+      const data = await response.json();
+      
+      if (API_DEBUG) {
+        console.log('Video analysis response:', data);
+      }
+      
+      return data as VideoAnalysisResponse;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      console.error(`Video analysis attempt ${attempt} failed:`, errorMessage);
+      lastError = error instanceof Error ? error : new Error(String(error));
+      
+      if (attempt >= retries) {
+        break;
+      }
+      
+      await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
     }
-    
-    // This should never happen due to the throw in the loop, but TypeScript requires a return
-    throw lastError || new Error("Video analysis failed after retries");
-  } catch (error) {
-    console.error('Error in analyzeVideo:', error);
-    throw error;
   }
+  
+  throw lastError || new Error('Video analysis failed after retries');
 }
 
 export interface EnhancePromptRequest {
@@ -1138,12 +1153,13 @@ export async function generateImages(
   response_format: string = "b64_json",
   background: string = "auto",
   outputFormat: string = "png",
-  quality: string = "auto"
+  quality: string = "auto",
+  model: string = DEFAULT_IMAGE_MODEL
 ): Promise<ImageGenerationResponse> {
   const pipelineRequest: ImagePipelineRequest = {
     action: PipelineAction.GENERATE,
     prompt,
-    model: 'gpt-image-1',
+    model: model || DEFAULT_IMAGE_MODEL,
     n,
     size,
     response_format,
@@ -1179,7 +1195,7 @@ export async function saveGeneratedImages(
   saveAll: boolean = true,
   folderPath: string = "",
   outputFormat: string = "png",
-  model: string = "gpt-image-1",
+  model: string = DEFAULT_IMAGE_MODEL,
   background: string = "auto",
   size: string = "1024x1024",
   analyze: boolean = false
@@ -1258,7 +1274,7 @@ export async function generateImagesWithAnalysis(params: {
   const pipelineRequest: ImagePipelineRequest = {
     action: PipelineAction.GENERATE,
     prompt: params.prompt,
-    model: params.model || 'gpt-image-1',
+    model: params.model || DEFAULT_IMAGE_MODEL,
     n: params.n ?? 1,
     size: params.size || 'auto',
     response_format: 'b64_json',
@@ -1379,20 +1395,13 @@ export async function analyzeImage(imageUrl: string, retries = 3): Promise<Image
  * Update asset metadata
  */
 export async function updateAssetMetadata(
-  blobName: string,
-  mediaType: MediaType,
-  metadata: AssetMetadata
+  assetId: string,
+  metadata: Partial<AssetMetadata>
 ): Promise<MetadataUpdateResponse> {
-  // Extract asset ID from blob name (remove extension and folder path)
-  const assetId = blobName.split('.')[0].split('/').pop();
-  
-  const params = new URLSearchParams();
-  params.append('media_type', mediaType);
-  
-  const url = `${API_BASE_URL}/metadata/${assetId}?${params.toString()}`;
+  const url = `${API_BASE_URL}/metadata/${assetId}`;
   
   if (API_DEBUG) {
-    console.log(`Updating metadata for asset: ${assetId} (blob: ${blobName})`);
+    console.log(`Updating metadata for asset: ${assetId}`);
     console.log(`PUT ${url}`);
     console.log('Metadata:', metadata);
   }
@@ -1403,7 +1412,7 @@ export async function updateAssetMetadata(
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify(metadata),  // Send metadata directly, not wrapped
+      body: JSON.stringify(metadata),
     });
     
     if (API_DEBUG) {
@@ -1420,10 +1429,14 @@ export async function updateAssetMetadata(
     const data = await response.json();
     
     if (API_DEBUG) {
-      console.log('Response data:', data);
+      console.log('Metadata update response:', data);
     }
     
-    return data;
+    return {
+      success: data.success ?? true,
+      message: data.message ?? 'Metadata updated successfully',
+      updated: Boolean(data.metadata)
+    };
   } catch (error) {
     console.error('Error updating metadata:', error);
     throw error;
@@ -1467,20 +1480,26 @@ export async function fetchFolders(
       console.log('Folders response data:', data);
     }
     
-    // Backend now returns simple string array
-    // But keep compatibility check in case of old format
     interface LegacyFolder {
       folder_path?: string;
       id?: string;
     }
     
-    const folderPaths = data.folders ? 
+    let folderPaths = data.folders ? 
       (Array.isArray(data.folders) && data.folders.length > 0 && typeof data.folders[0] === 'string' 
         ? data.folders as string[]
         : data.folders.map((folder: string | LegacyFolder) => 
             typeof folder === 'string' ? folder : folder.folder_path || folder.id || ''
           )
       ) : [];
+
+    const mergedFolders = new Set<string>(folderPaths.filter(Boolean));
+    clientCreatedFolders.forEach((folder) => {
+      if (folder) {
+        mergedFolders.add(folder);
+      }
+    });
+    folderPaths = Array.from(mergedFolders).sort((a, b) => a.localeCompare(b));
     
     return {
       folders: folderPaths,
@@ -1499,64 +1518,35 @@ export async function createFolder(
   folderPath: string,
   mediaType: MediaType = MediaType.IMAGE
 ): Promise<{success: boolean, folder_path: string}> {
-  const url = `${API_BASE_URL}/gallery/folders`;
-  
+  const normalized = folderPath.trim().replace(/^\/+|\/+$/g, '');
+
+  if (!normalized) {
+    throw new Error('Folder name cannot be empty');
+  }
+
+  clientCreatedFolders.add(normalized);
+
   if (API_DEBUG) {
-    console.log(`Creating folder: ${folderPath}`);
-    console.log(`POST ${url}`);
+    console.log(`Registered folder ${normalized} for media type ${mediaType}`);
   }
-  
-  try {
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        folder_path: folderPath,
-        media_type: mediaType
-      }),
-    });
-    
-    if (API_DEBUG) {
-      console.log(`Response status: ${response.status} ${response.statusText}`);
-      if (!response.ok) {
-        console.error('Error response:', await response.text().catch(() => 'Could not read response text'));
-      }
-    }
-    
-    if (!response.ok) {
-      throw new Error(`Failed to create folder: ${response.status} ${response.statusText}`);
-    }
-    
-    const data = await response.json();
-    
-    if (API_DEBUG) {
-      console.log('Create folder response data:', data);
-    }
-    
-    return {
-      success: data.success,
-      folder_path: data.folder_path
-    };
-  } catch (error) {
-    console.error('Error creating folder:', error);
-    throw error;
-  }
+
+  return {
+    success: true,
+    folder_path: normalized
+  };
 }
 
 /**
  * Move an asset to a different folder
  */
 export async function moveAsset(
-  blobName: string,
-  targetFolder: string,
-  mediaType: MediaType
-): Promise<{success: boolean, message: string}> {
-  const url = `${API_BASE_URL}/gallery/move`;
+  assetId: string,
+  targetFolder: string
+): Promise<MetadataUpdateResponse> {
+  const url = `${API_BASE_URL}/metadata/${assetId}`;
   
   if (API_DEBUG) {
-    console.log(`Moving asset ${blobName} to folder ${targetFolder}`);
+    console.log(`Moving asset ${assetId} to folder ${targetFolder}`);
     console.log(`PUT ${url}`);
   }
   
@@ -1567,9 +1557,7 @@ export async function moveAsset(
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        blob_name: blobName,
-        media_type: mediaType,
-        target_folder: targetFolder
+        folder_path: targetFolder
       }),
     });
     
@@ -1591,8 +1579,9 @@ export async function moveAsset(
     }
     
     return {
-      success: data.success,
-      message: data.message
+      success: data.success ?? true,
+      message: data.message ?? 'Asset moved successfully',
+      updated: Boolean(data.metadata)
     };
   } catch (error) {
     console.error('Error moving asset:', error);
@@ -2024,28 +2013,27 @@ export async function createVideoGenerationWithAnalysisMultipart(request: VideoG
  * Analyze a video and save the analysis results to the video's metadata
  * This combines analyzing the video and updating its metadata in a single workflow
  */
-export async function analyzeAndUpdateVideoMetadata(videoName: string): Promise<{
+export async function analyzeAndUpdateVideoMetadata(assetId: string, videoPath: string): Promise<{
   analysis: VideoAnalysisResponse;
   metadata: MetadataUpdateResponse;
 }> {
   if (API_DEBUG) {
-    console.log(`Analyzing video and updating metadata for: ${videoName}`);
+    console.log(`Analyzing video and updating metadata for asset: ${assetId}`);
+    console.log(`Video path: ${videoPath}`);
   }
   
   try {
-    // Step 1: Analyze the video
-    const analysis = await analyzeVideo(videoName);
+    const analysis = await analyzeVideo(videoPath);
     
     if (!analysis) {
-      throw new Error("Failed to analyze video: No analysis result returned");
+      throw new Error('Failed to analyze video: No analysis result returned');
     }
     
     if (API_DEBUG) {
-      console.log("Video analysis complete, updating metadata...");
+      console.log('Video analysis complete, updating metadata...');
     }
     
-    // Step 2: Prepare metadata update with analysis results using nested structure
-    const metadata: AssetMetadata = {
+    const metadata: Partial<AssetMetadata> = {
       analysis: {
         summary: analysis.summary,
         products: analysis.products,
@@ -2056,11 +2044,10 @@ export async function analyzeAndUpdateVideoMetadata(videoName: string): Promise<
       has_analysis: true
     };
     
-    // Step 3: Update the video's metadata
-    const metadataResult = await updateAssetMetadata(videoName, MediaType.VIDEO, metadata);
+    const metadataResult = await updateAssetMetadata(assetId, metadata);
     
     if (API_DEBUG) {
-      console.log("Metadata update complete");
+      console.log('Metadata update complete');
     }
     
     return {
@@ -2068,48 +2055,7 @@ export async function analyzeAndUpdateVideoMetadata(videoName: string): Promise<
       metadata: metadataResult
     };
   } catch (error) {
-    console.error("Error in analyzeAndUpdateVideoMetadata:", error);
-    throw error;
-  }
-} 
-
-// Authentication and CLI Integration APIs
-
-/**
- * Get comprehensive authentication status for all CLI tools and services
- */
-export async function getAuthenticationStatus(): Promise<{
-  success: boolean;
-  authentication_status: any;
-  error?: string;
-}> {
-  const url = `${API_BASE_URL}/auth/status`;
-  
-  if (API_DEBUG) {
-    console.log('Fetching authentication status');
-    console.log(`GET ${url}`);
-  }
-  
-  try {
-    const response = await fetch(url);
-    
-    if (API_DEBUG) {
-      console.log(`Response status: ${response.status} ${response.statusText}`);
-    }
-    
-    if (!response.ok) {
-      throw new Error(`Failed to get authentication status: ${response.status} ${response.statusText}`);
-    }
-    
-    const data = await response.json();
-    
-    if (API_DEBUG) {
-      console.log('Authentication status:', data);
-    }
-    
-    return data;
-  } catch (error) {
-    console.error('Error fetching authentication status:', error);
+    console.error('Error in analyzeAndUpdateVideoMetadata:', error);
     throw error;
   }
 }
@@ -2119,7 +2065,7 @@ export async function getAuthenticationStatus(): Promise<{
  */
 export async function getSetupInstructions(): Promise<{
   success: boolean;
-  setup_instructions: any;
+  setup_instructions: unknown;
   error?: string;
 }> {
   const url = `${API_BASE_URL}/auth/setup-instructions`;
@@ -2167,7 +2113,7 @@ export async function storeImageMetadataInDataverse(metadata: {
   quality?: string;
   seed?: number;
   model_version?: string;
-  generation_settings?: any;
+  generation_settings?: Record<string, unknown>;
 }): Promise<{
   success: boolean;
   record_id?: string;
@@ -2218,7 +2164,7 @@ export async function queryImagesFromDataverse(filters?: {
   limit?: number;
 }): Promise<{
   success: boolean;
-  images: any[];
+  images: Array<Record<string, unknown>>;
   count: number;
 }> {
   const url = `${API_BASE_URL}/dataverse/images/query`;

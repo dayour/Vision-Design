@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "strict": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "exclude": [
+    "node_modules",
+    "**/node_modules",
+    ".next",
+    "**/.next",
+    "frontend/.next",
+    "frontend/node_modules",
+    "dist",
+    "**/dist",
+    "build",
+    "**/build",
+    "coverage",
+    "**/coverage"
+  ],
+  "files": [],
+  "typeRoots": ["./node_modules/@types"]
+}

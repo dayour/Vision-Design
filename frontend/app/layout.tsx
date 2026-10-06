@@ -17,6 +17,7 @@ import { AnimatedLayout } from "@/components/animated-layout";
 import { SessionProvider } from "next-auth/react";
 import { auth } from "@/auth";
 import { MediaProvider } from "@/context/media-context";
+import { EnvironmentCheck } from "@/components/EnvironmentCheck";
 import Script from "next/script";
 
 type RootLayoutProps = {
@@ -119,6 +120,7 @@ export default async function RootLayout({ children }: RootLayoutProps) {
                       </SidebarProvider>
                     </div>
                     <Toaster />
+                    <EnvironmentCheck />
                     </FolderProvider>
                   </ImageSettingsProvider>
                 </JobsProvider>

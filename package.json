@@ -1,0 +1,5 @@
+{
+  "dependencies": {
+    "@darbotlabs/darbot-browser-mcp": "^0.2.0"
+  }
+}

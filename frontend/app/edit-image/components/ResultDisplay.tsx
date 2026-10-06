@@ -4,7 +4,7 @@ import React, { useState, useEffect } from 'react';
 import Image from 'next/image';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
-import { DownloadIcon, SaveIcon, ImageIcon, FolderTree, Plus, Check, RefreshCw, Loader2, ArrowRightIcon } from 'lucide-react';
+import { DownloadIcon, SaveIcon, ImageIcon, FolderTree, Plus, Check, RefreshCw, Loader2, ArrowRightIcon, RotateCcw } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -37,8 +37,36 @@ interface ResultDisplayProps {
 export default function ResultDisplay({
   originalImage,
   resultData,
-  onSave
+  onSave,
+  onReset
 }: ResultDisplayProps) {
+  const baseDimensions = React.useMemo(() => ({
+    width: Math.max(originalImage?.width ?? 512, 1),
+    height: Math.max(originalImage?.height ?? 512, 1)
+  }), [originalImage?.width, originalImage?.height]);
+  const [displaySize, setDisplaySize] = useState(baseDimensions);
+
+  useEffect(() => {
+    const compute = () => {
+      const maxWidth = Math.min(window.innerWidth - 100, 800);
+      const maxHeight = 600;
+      const aspect = baseDimensions.height ? baseDimensions.width / baseDimensions.height : 1;
+      let width = maxWidth;
+      let height = Math.floor(width / aspect);
+      if (height > maxHeight) {
+        height = maxHeight;
+        width = Math.floor(height * aspect);
+      }
+      setDisplaySize({
+        width: Math.max(Math.round(width), 1),
+        height: Math.max(Math.round(height), 1)
+      });
+    };
+
+    compute();
+    window.addEventListener('resize', compute);
+    return () => window.removeEventListener('resize', compute);
+  }, [baseDimensions]);
   const [activeTab, setActiveTab] = useState('result');
   const [isSaving, setIsSaving] = useState(false);
   const [folders, setFolders] = useState<string[]>([]);
@@ -48,7 +76,7 @@ export default function ResultDisplay({
   const [isCreatingFolderLoading, setIsCreatingFolderLoading] = useState(false);
   const [isRefreshingFolders, setIsRefreshingFolders] = useState(false);
   const newFolderInputRef = React.useRef<HTMLInputElement>(null);
-  const aspectRatio = originalImage.height ? originalImage.width / originalImage.height : 1;
+  // display sizing is handled by displaySize state
 
   // Fetch available folders when component mounts
   useEffect(() => {
@@ -181,16 +209,15 @@ export default function ResultDisplay({
         <TabsContent value="result" className="mt-0">
           <Card className="p-6 flex flex-col items-center justify-center border-0 shadow-none">
             <div className="w-full max-w-2xl">
-              <div className="relative w-full" style={{ aspectRatio }}>
-                <Image 
-                  src={resultData.imageUrl}
-                  alt="Generated result"
-                  fill
-                  className="object-contain rounded-lg shadow-md"
-                  sizes="(max-width: 768px) 100vw, 50vw"
-                  unoptimized
-                />
-              </div>
+              <Image
+                src={resultData.imageUrl}
+                alt="Generated result"
+                width={displaySize.width}
+                height={displaySize.height}
+                className="h-auto w-full max-h-[600px] object-contain rounded-lg shadow-md"
+                sizes="(max-width: 768px) 100vw, 50vw"
+                unoptimized
+              />
             </div>
 
             <div className="w-full max-w-2xl mt-4 space-y-2">
@@ -212,16 +239,15 @@ export default function ResultDisplay({
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 relative">
             <Card className="p-4 flex flex-col items-center border-0 shadow-none">
               <div className="relative w-full flex items-center justify-center bg-muted/30 rounded-lg overflow-hidden p-2">
-                <div className="relative w-full" style={{ aspectRatio }}>
-                  <Image 
-                    src={originalImage.url}
-                    alt="Original"
-                    fill
-                    className="object-contain rounded-lg"
-                    sizes="(max-width: 768px) 100vw, 40vw"
-                    unoptimized
-                  />
-                </div>
+                <Image
+                  src={originalImage.url}
+                  alt="Original"
+                  width={displaySize.width}
+                  height={displaySize.height}
+                  className="h-auto w-full max-h-[600px] object-contain rounded-lg"
+                  sizes="(max-width: 768px) 100vw, 40vw"
+                  unoptimized
+                />
               </div>
             </Card>
 
@@ -234,16 +260,15 @@ export default function ResultDisplay({
 
             <Card className="p-4 flex flex-col items-center border-0 shadow-none">
               <div className="relative w-full flex items-center justify-center bg-muted/30 rounded-lg overflow-hidden p-2">
-                <div className="relative w-full" style={{ aspectRatio }}>
-                  <Image 
-                    src={resultData.imageUrl}
-                    alt="Generated"
-                    fill
-                    className="object-contain rounded-lg"
-                    sizes="(max-width: 768px) 100vw, 40vw"
-                    unoptimized
-                  />
-                </div>
+                <Image
+                  src={resultData.imageUrl}
+                  alt="Generated"
+                  width={displaySize.width}
+                  height={displaySize.height}
+                  className="h-auto w-full max-h-[600px] object-contain rounded-lg"
+                  sizes="(max-width: 768px) 100vw, 40vw"
+                  unoptimized
+                />
               </div>
             </Card>
           </div>
@@ -272,6 +297,15 @@ export default function ResultDisplay({
       </Tabs>
 
       <div className="flex flex-wrap gap-2 mt-4">
+        <Button
+          variant="ghost"
+          onClick={onReset}
+          className="gap-2"
+          disabled={isSaving}
+        >
+          <RotateCcw className="h-4 w-4" />
+          Start Over
+        </Button>
         <Button 
           variant="outline" 
           onClick={handleDownload}

@@ -38,8 +38,8 @@ from backend.models.images import (
     PipelineSaveOptions,
     PipelineAnalysisOptions,
 )
-from backend.core import llm_client, image_sas_token
-from backend.core.azure_storage import AzureBlobStorageService
+from backend.core import llm_client
+from backend.core.storage import StorageService
 from backend.core.analyze import ImageAnalyzer
 from backend.core.config import settings
 from backend.core.instructions import (
@@ -49,7 +49,7 @@ from backend.core.instructions import (
     brand_protect_replace_msg,
     filename_system_message,
 )
-from backend.core.cosmos_client import CosmosDBService
+from backend.core.dataverse_service import DataverseService, DataverseError, DataverseAuthenticationError
 from backend.core.image_pipeline import ImagePipelineService
 
 router = APIRouter()
@@ -61,16 +61,23 @@ logger = logging.getLogger(__name__)
 pipeline_service = ImagePipelineService()
 
 
-def get_cosmos_service() -> Optional[CosmosDBService]:
-    """Dependency to get Cosmos DB service instance (optional)"""
+@router.get("/test")
+def test_endpoint():
+    """Simple test endpoint to verify API is working"""
+    return {
+        "status": "ok",
+        "message": "Images API is working",
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+
+def get_dataverse_service() -> DataverseService:
+    """Dependency to get Dataverse service instance (required)"""
     try:
-        # Check if we have either managed identity or key-based auth configured
-        if settings.AZURE_COSMOS_DB_ENDPOINT and (settings.USE_MANAGED_IDENTITY or settings.AZURE_COSMOS_DB_KEY):
-            return CosmosDBService()
-        return None
+        return DataverseService()
     except Exception as e:
-        logger.warning(f"Cosmos DB service unavailable: {e}")
-        return None
+        logger.error(f"Failed to initialize Dataverse service: {e}")
+        raise HTTPException(status_code=503, detail="Dataverse service unavailable")
 
 
 def normalize_filename(filename: str) -> str:
@@ -190,16 +197,12 @@ async def edit_image_upload(
 @router.post("/save", response_model=ImageSaveResponse)
 async def save_generated_images(
     request: ImageSaveRequest,
-    azure_storage_service: AzureBlobStorageService = Depends(
-        lambda: AzureBlobStorageService()
-    ),
-    cosmos_service: Optional[CosmosDBService] = Depends(get_cosmos_service),
+    dataverse_service: DataverseService = Depends(get_dataverse_service),
 ):
-    """Save generated images to blob storage and update metadata."""
+    """Save generated images directly to Dataverse."""
     return await pipeline_service.save(
         request,
-        azure_storage_service=azure_storage_service,
-        cosmos_service=cosmos_service,
+        dataverse_service=dataverse_service,
     )
 
 
@@ -214,20 +217,19 @@ async def process_image_pipeline(
         description="Legacy field name for source images",
     ),
     mask: Optional[UploadFile] = File(None),
-    azure_storage_service: AzureBlobStorageService = Depends(
-        lambda: AzureBlobStorageService()
-    ),
-    cosmos_service: Optional[CosmosDBService] = Depends(get_cosmos_service),
+    dataverse_service: DataverseService = Depends(get_dataverse_service),
 ):
     """Unified pipeline endpoint for generation, editing, saving, and analysis."""
+    logger.info(f"Pipeline endpoint called with payload length: {len(payload)}")
     try:
         pipeline_request = ImagePipelineRequest.parse_raw(payload)
+        logger.info(f"Parsed request: action={pipeline_request.action}, model={pipeline_request.model}, prompt_length={len(pipeline_request.prompt)}")
     except ValidationError as exc:
+        logger.error(f"Validation error: {exc}")
         raise HTTPException(status_code=422, detail=json.loads(exc.json()))
-
-    storage_service = (
-        azure_storage_service if pipeline_request.save_options.enabled else None
-    )
+    except Exception as exc:
+        logger.error(f"Unexpected error parsing payload: {exc}", exc_info=True)
+        raise HTTPException(status_code=400, detail=f"Failed to parse request: {str(exc)}")
 
     uploaded_images: Optional[List[UploadFile]] = None
     if source_images or image:
@@ -239,8 +241,7 @@ async def process_image_pipeline(
 
     return await pipeline_service.process_pipeline(
         pipeline_request,
-        azure_storage_service=storage_service,
-        cosmos_service=cosmos_service,
+        dataverse_service=dataverse_service,
         source_images=uploaded_images,
         mask=mask,
     )
@@ -249,12 +250,9 @@ async def process_image_pipeline(
 @router.post("/generate-with-analysis", response_model=ImageSaveResponse)
 async def generate_image_with_analysis(
     req: ImageGenerateWithAnalysisRequest,
-    azure_storage_service: AzureBlobStorageService = Depends(
-        lambda: AzureBlobStorageService()
-    ),
-    cosmos_service: Optional[CosmosDBService] = Depends(get_cosmos_service),
+    dataverse_service: DataverseService = Depends(get_dataverse_service),
 ):
-    """Generate, save, and optionally analyze images in one call."""
+    """Generate, save, and optionally analyze images in one call using Dataverse."""
     pipeline_request = ImagePipelineRequest(
         action=PipelineAction.GENERATE,
         prompt=req.prompt,
@@ -280,8 +278,7 @@ async def generate_image_with_analysis(
 
     pipeline_response = await pipeline_service.process_pipeline(
         pipeline_request,
-        azure_storage_service=azure_storage_service,
-        cosmos_service=cosmos_service,
+        dataverse_service=dataverse_service,
     )
 
     if not pipeline_response.save:
@@ -332,7 +329,7 @@ def analyze_image(req: ImageAnalyzeRequest):
     Analyze an image using an LLM.
 
     Args:
-        image_path: path on Azure Blob Storage. Supports a full URL with or without a SAS token.
+        image_path: path on Dataverse. Supports a full URL with or without a SAS token.
         OR
         base64_image: Base64-encoded image data to analyze directly.
 
@@ -347,16 +344,13 @@ def analyze_image(req: ImageAnalyzeRequest):
         if req.image_path:
             file_path = req.image_path
 
-            # check if the path is a valid Azure blob storage path
+            # check if the path is a valid Dataverse path
             pattern = r"^https://[a-z0-9]+\.blob\.core\.windows\.net/[a-z0-9]+/.+"
             match = re.match(pattern, file_path)
 
             if not match:
-                raise ValueError("Invalid Azure blob storage path")
-            else:
-                # check if the path contains a SAS token
-                if "?" not in file_path:
-                    file_path += f"?{image_sas_token}"
+                raise ValueError("Invalid Dataverse path")
+            # Note: SAS token should already be included in file_path from Dataverse
 
             # Download the image from the URL
             response = requests.get(file_path, timeout=30)
@@ -465,7 +459,7 @@ def analyze_image_custom(req: ImageAnalyzeCustomRequest):
     Analyze an image using a custom prompt while maintaining the same response structure.
     
     Args:
-        image_path: path on Azure Blob Storage. Supports a full URL with or without a SAS token.
+        image_path: path on Dataverse. Supports a full URL with or without a SAS token.
         OR
         base64_image: Base64-encoded image data to analyze directly.
         custom_prompt: Custom instructions for the analysis.
@@ -481,16 +475,13 @@ def analyze_image_custom(req: ImageAnalyzeCustomRequest):
         if req.image_path:
             file_path = req.image_path
 
-            # check if the path is a valid Azure blob storage path
+            # check if the path is a valid Dataverse path
             pattern = r"^https://[a-z0-9]+\.blob\.core\.windows\.net/[a-z0-9]+/.+"
             match = re.match(pattern, file_path)
 
             if not match:
-                raise ValueError("Invalid Azure blob storage path")
-            else:
-                # check if the path contains a SAS token
-                if "?" not in file_path:
-                    file_path += f"?{image_sas_token}"
+                raise ValueError("Invalid Dataverse path")
+            # Note: SAS token should already be included in file_path from Dataverse
 
             # Download the image from the URL
             response = requests.get(file_path, timeout=30)

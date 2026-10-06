@@ -13,7 +13,11 @@ import {
   editImage,
   protectImagePrompt,
   generateImagesWithAnalysis,
+  DEFAULT_IMAGE_MODEL,
+  FLUX_MODEL_PROVIDER,
+  resolveDefaultImageModel,
 } from "@/services/api";
+import type { ImageGenerationResponse } from "@/services/api";
 
 interface ImageCreationContainerProps {
   className?: string;
@@ -35,6 +39,7 @@ interface ImageGenerationSettings {
   inputFidelity: string;
   sourceImages?: File[];
   brandsList?: string[];
+  model?: string;
 }
 
 interface ImageData {
@@ -62,16 +67,11 @@ interface BrandProtection {
   brands: string[];
 }
 
-interface GenerationResponse {
-  imgen_model_response?: {
-    data: ImageData[];
-    [key: string]: unknown;
-  };
+type GenerationResponse = ImageGenerationResponse & {
   brandProtection?: BrandProtection;
   metadata?: Record<string, string>;
   analysisResults?: ImageAnalysis[];
-  [key: string]: unknown;
-}
+};
 
 interface SavedImage {
   url: string;
@@ -110,6 +110,8 @@ export function ImageCreationContainer({ className = "", onImagesSaved }: ImageC
     quality: "auto",
     sourceImages: [] as File[],
     brandsList: [] as string[],
+    inputFidelity: "low",
+    model: (FLUX_MODEL_PROVIDER === 'foundry' ? 'flux-pro' : DEFAULT_IMAGE_MODEL),
   });
 
   // Fetch available folders when component mounts
@@ -132,7 +134,8 @@ export function ImageCreationContainer({ className = "", onImagesSaved }: ImageC
       setSettings({ 
         ...newSettings, 
         sourceImages: newSettings.sourceImages || [],
-        brandsList: newSettings.brandsList || []
+        brandsList: newSettings.brandsList || [],
+        model: newSettings.model || resolveDefaultImageModel(FLUX_MODEL_PROVIDER, DEFAULT_IMAGE_MODEL),
       });
       setSelectedFolder(newSettings.folder);
       const normalizedFolder = newSettings.folder === 'root' ? '' : newSettings.folder;
@@ -178,7 +181,7 @@ export function ImageCreationContainer({ className = "", onImagesSaved }: ImageC
         });
         
         // Call the image edit API with the protected prompt
-        response = await editImage(
+        const editResult = await editImage(
           newSettings.sourceImages,
           generationPrompt, // Use protected prompt for generation
           newSettings.variations, // Number of variations from dropdown
@@ -186,6 +189,7 @@ export function ImageCreationContainer({ className = "", onImagesSaved }: ImageC
           newSettings.quality, // Quality parameter
           newSettings.inputFidelity // Input fidelity parameter
         );
+        response = { ...editResult };
         
         // Update the loading toast to success
         toast.success("Image editing completed", {
@@ -208,7 +212,7 @@ export function ImageCreationContainer({ className = "", onImagesSaved }: ImageC
             output_format: newSettings.outputFormat,
             background: newSettings.background,
             folder_path: normalizedFolder,
-            model: 'gpt-image-1',
+            model: newSettings.model || DEFAULT_IMAGE_MODEL,
             analyze: true,
             save_all: true,
           });
@@ -231,15 +235,17 @@ export function ImageCreationContainer({ className = "", onImagesSaved }: ImageC
           const generatingToast = toast.loading("Generating images...", {
             description: `Creating ${newSettings.variations} image${newSettings.variations > 1 ? 's' : ''} with your prompt${brandProtectionApplied ? ' (brand protection applied)' : ''}`,
           });
-          response = await generateImages(
+          const generationResult = await generateImages(
             generationPrompt,
             newSettings.variations,
             newSettings.imageSize,
             "b64_json",
             newSettings.background,
             newSettings.outputFormat,
-            newSettings.quality
+            newSettings.quality,
+            newSettings.model || DEFAULT_IMAGE_MODEL
           );
+          response = { ...generationResult };
           toast.success("Image generation completed", {
             id: generatingToast,
             description: `Successfully generated ${newSettings.variations} image${newSettings.variations > 1 ? 's' : ''}`
@@ -252,7 +258,7 @@ export function ImageCreationContainer({ className = "", onImagesSaved }: ImageC
         originalPrompt,
         protectedPrompt: generationPrompt,
         mode: newSettings.brandsProtection,
-        brands: newSettings.brandsList
+        brands: newSettings.brandsList ?? []
       };
       
       setGenerationResponseData(response);
@@ -265,7 +271,8 @@ export function ImageCreationContainer({ className = "", onImagesSaved }: ImageC
           normalizedFolder,
           newSettings.outputFormat,
           newSettings.background,
-          newSettings.imageSize
+          newSettings.imageSize,
+          'gpt-image-1'
         );
       }
       
@@ -278,7 +285,7 @@ export function ImageCreationContainer({ className = "", onImagesSaved }: ImageC
         
         if (hasBase64Images) {
           // Process each image and collect analysis results (silently)
-          const analysisPromises = response.imgen_model_response.data.map(
+          const analysisPromises = response.imgen_model_response?.data?.map(
             async (imageData: ImageData, idx: number) => {
               if (imageData.b64_json) {
                 try {
@@ -297,17 +304,28 @@ export function ImageCreationContainer({ className = "", onImagesSaved }: ImageC
               }
               return null;
             }
-          );
+          ) ?? [];
           
           const analysisResults = await Promise.all(analysisPromises);
-          successfulAnalysis = analysisResults.filter(r => r && r.analysis); // Assign here
+          const filteredResults: ImageAnalysis[] = [];
+          for (const item of analysisResults) {
+            if (item && item.analysis) {
+              filteredResults.push({ index: item.index, analysis: item.analysis });
+            }
+          }
+          successfulAnalysis = filteredResults;
           
           // Store analysis results to use when saving (no toast needed)
-          if (successfulAnalysis.length > 0) {
-            setGenerationResponseData((prev: GenerationResponse | null) => ({
-              ...(prev || {}),
-              analysisResults: successfulAnalysis
-            }));
+          if (successfulAnalysis && successfulAnalysis.length > 0) {
+            setGenerationResponseData((prev) => {
+              if (!prev) {
+                return prev;
+              }
+              return {
+                ...prev,
+                analysisResults: successfulAnalysis,
+              };
+            });
           }
         }
       }
@@ -333,6 +351,7 @@ export function ImageCreationContainer({ className = "", onImagesSaved }: ImageC
     outputFormat: string = "png",
     background: string = "auto",
     imageSize: string,
+    model: string = DEFAULT_IMAGE_MODEL,
     preAnalysisResults?: ImageAnalysis[] 
   ) => {
     try {
@@ -350,7 +369,7 @@ export function ImageCreationContainer({ className = "", onImagesSaved }: ImageC
                                 generationResponse.brandProtection.brands.length > 0;
       
       // Create a copy of generationResponse with additional metadata
-      const enhancedResponse = { ...generationResponse };
+      const enhancedResponse: GenerationResponse = { ...generationResponse };
       
       // Add brand protection metadata to the response before saving
       if (hasBrandProtection) {
@@ -376,7 +395,7 @@ export function ImageCreationContainer({ className = "", onImagesSaved }: ImageC
         true, // Save all generated images
         folder, // Folder path
         outputFormat, // Output format
-        "gpt-image-1", // Model - This is always gpt-image-1 in our current implementation
+        model || DEFAULT_IMAGE_MODEL,
         background, // Background setting
         imageSize, // Pass imageSize here
         shouldAnalyze // Analyze images in the backend if we have pre-analysis results

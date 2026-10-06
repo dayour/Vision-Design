@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import Image from "next/image";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -18,7 +18,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { enhanceImagePrompt, createFolder, MediaType, fetchFolders } from "@/services/api";
+import { enhanceImagePrompt, createFolder, MediaType, fetchFolders, DEFAULT_IMAGE_MODEL, FLUX_MODEL_PROVIDER, resolveDefaultImageModel } from "@/services/api";
 import { toast } from "sonner";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Input } from "@/components/ui/input";
@@ -42,6 +42,7 @@ interface ImageOverlayProps {
     inputFidelity: string;
     sourceImages?: File[];
     brandsList?: string[];
+    model?: string;
   }) => void;
   isGenerating?: boolean;
   onPromptChange?: (newPrompt: string, isEnhanced: boolean) => void;
@@ -77,6 +78,7 @@ export function ImageOverlay({
   const [quality, setQuality] = useState("auto");
   const [inputFidelity, setInputFidelity] = useState("low");
   const [sourceImages, setSourceImages] = useState<File[]>([]);
+  const defaultModel = resolveDefaultImageModel(FLUX_MODEL_PROVIDER, DEFAULT_IMAGE_MODEL);
   const [isClient, setIsClient] = useState(false);
   
   // Reference to the textarea element
@@ -164,7 +166,7 @@ export function ImageOverlay({
     return isDarkTheme ? 'hover:bg-white/10' : 'hover:bg-gray-200/50';
   };
 
-  const handleSubmit = () => {
+  const handleSubmit = useCallback(() => {
     if (prompt.trim() === "") {
       toast.error("Please enter a prompt");
       return;
@@ -191,11 +193,12 @@ export function ImageOverlay({
       quality,
       inputFidelity,
       sourceImages,
-      brandsList: imageSettings.settings.brandsList
+      brandsList: imageSettings.settings.brandsList,
+      model: defaultModel,
     });
-  };
+  }, [prompt, variations, onGenerate, imageSize, saveImages, mode, imageSettings.settings.brandsProtection, imageSettings.settings.brandsList, folder, background, outputFormat, quality, inputFidelity, sourceImages, defaultModel]);
 
-  const handleWizardEnhance = async () => {
+  const handleWizardEnhance = useCallback(async () => {
     if (!prompt.trim() || isGenerating || isWizardEnhancing) return;
     
     // Set loading state
@@ -226,9 +229,9 @@ export function ImageOverlay({
       // Reset loading state
       setIsWizardEnhancing(false);
     }
-  };
+  }, [prompt, isGenerating, isWizardEnhancing, onPromptChange]);
 
-  const handleCreateFolder = async () => {
+  const handleCreateFolder = useCallback(async () => {
     if (!newFolderName.trim()) return;
     
     try {
@@ -269,9 +272,9 @@ export function ImageOverlay({
     } finally {
       setIsCreatingFolderLoading(false);
     }
-  };
+  }, [newFolderName, onFolderCreated, refreshFolders]);
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
+  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'Enter') {
       e.preventDefault();
       handleCreateFolder();
@@ -279,10 +282,10 @@ export function ImageOverlay({
       setIsCreatingFolder(false);
       setNewFolderName("");
     }
-  };
+  }, [handleCreateFolder]);
 
   // Function to refresh the folders list
-  const handleRefreshFolders = async () => {
+  const handleRefreshFolders = useCallback(async () => {
     if (isRefreshingFolders) return;
     
     try {
@@ -309,9 +312,9 @@ export function ImageOverlay({
     } finally {
       setIsRefreshingFolders(false);
     }
-  };
+  }, [isRefreshingFolders, onFolderCreated, refreshFolders]);
 
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files) {
       const files = Array.from(e.target.files);
       const validFiles: File[] = [];
@@ -355,30 +358,28 @@ export function ImageOverlay({
         });
       }
     }
-  };
+  }, [sourceImages]);
   
   // Handle image removal - now removes a specific image by index
-  const handleRemoveImage = (index: number) => {
+  const handleRemoveImage = useCallback((index: number) => {
     setSourceImages(prev => prev.filter((_, i) => i !== index));
-  };
+  }, []);
   
   // Handle clearing all images
-  const handleClearAllImages = () => {
+  const handleClearAllImages = useCallback(() => {
     setSourceImages([]);
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
-  };
+  }, []);
 
   return (
     <div className="sticky bottom-0 left-0 right-0 flex items-end justify-center p-6 z-20 pointer-events-none">
       <div className={cn(
         "w-full transition-all duration-300 ease-in-out pointer-events-auto",
         expanded ? "mb-6" : "mb-2"
-      )}
-      style={{
-        maxWidth: isClient && sourceImages.length > 0 ? '58rem' : '56rem' // 4xl = 56rem, so adding just 2rem
-      }}>
+      , isClient && sourceImages.length > 0 ? 'max-w-[58rem]' : 'max-w-[56rem]')}
+      >
         <div className={cn(
           "rounded-xl p-4 shadow-lg border",
           getOverlayBgColor()
@@ -894,27 +895,11 @@ export function ImageOverlay({
                             value="analyze" 
                             aria-label="Toggle analysis"
                             className={cn(
-                              "rounded-md",
-                              isDarkTheme ? "bg-black/30 border-0 text-white" : "bg-white/50 border-gray-200 text-gray-900"
+                              "rounded-md p-2 flex items-center justify-center w-10 h-8",
+                              aiAnalysisEnabled
+                                ? (isDarkTheme ? "bg-white/15 text-white border-white/30" : "bg-gray-200/50 text-gray-900 border-gray-300")
+                                : (isDarkTheme ? "bg-black/30 text-white border-white/10" : "bg-white/50 text-gray-500 border-gray-200")
                             )}
-                            style={{
-                              backgroundColor: aiAnalysisEnabled 
-                                ? (isDarkTheme ? "rgba(255, 255, 255, 0.15)" : "rgba(209, 213, 219, 0.5)") 
-                                : (isDarkTheme ? "rgba(0, 0, 0, 0.3)" : "rgba(255, 255, 255, 0.5)"),
-                              border: aiAnalysisEnabled 
-                                ? (isDarkTheme ? "1px solid rgba(255, 255, 255, 0.3)" : "1px solid rgba(209, 213, 219, 0.5)") 
-                                : (isDarkTheme ? "1px solid rgba(255, 255, 255, 0.1)" : "1px solid rgba(229, 231, 235, 0.5)"),
-                              color: aiAnalysisEnabled 
-                                ? (isDarkTheme ? "white" : "rgb(17, 24, 39)") 
-                                : (isDarkTheme ? "rgba(255, 255, 255, 0.6)" : "rgb(107, 114, 128)"),
-                              padding: "0.5rem",
-                              minWidth: "auto",
-                              width: "40px",
-                              height: "32px",
-                              display: "flex",
-                              justifyContent: "center",
-                              alignItems: "center"
-                            }}
                           >
                             <Eye className={`h-4 w-4 ${aiAnalysisEnabled ? (isDarkTheme ? "text-white" : "text-gray-900") : ""}`} />
                           </ToggleGroupItem>

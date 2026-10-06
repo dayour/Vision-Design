@@ -15,14 +15,16 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        
       - name: Login to Azure Container Registry
-        uses: azure/docker-login@v1
+        uses: azure/docker-login@v2
         with:
           login-server: aigbbemea.azurecr.io
           username: ${{ secrets.ACR_USERNAME }}
           password: ${{ secrets.ACR_PASSWORD }}
+          
       - name: Build and push Docker image
-        uses: docker/build-push-action@v4
+        uses: docker/build-push-action@v5
         with:
           context: .
           file: ./backend/Dockerfile

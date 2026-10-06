@@ -12,13 +12,11 @@ import requests
 from fastapi import HTTPException, UploadFile
 from PIL import Image
 
-from backend.core import dalle_client, llm_client, image_sas_token, flux_client
+from backend.core import dalle_client, llm_client, flux_client
 from backend.core.analyze import ImageAnalyzer
-from backend.core.azure_storage import AzureBlobStorageService
 from backend.core.config import settings
-from backend.core.cosmos_client import CosmosDBService
+from backend.core.dataverse_service import DataverseService, DataverseError
 from backend.core.instructions import analyze_image_system_message
-from backend.models.gallery import MediaType
 from backend.models.images import (
     ImageEditRequest,
     ImageGenerationRequest,
@@ -100,6 +98,8 @@ class ImagePipelineService:
                 detail="Flux service is currently unavailable. Please check your BFL API key configuration."
             )
 
+        provider = getattr(flux_client, "provider", None)
+
         # Prepare Flux-specific parameters
         kwargs = {}
         if request.model == "flux-pro-ultra":
@@ -131,6 +131,7 @@ class ImagePipelineService:
             "output_format": request.output_format or "jpeg",
             "webhook_url": request.webhook_url,
             "webhook_secret": request.webhook_secret,
+            "n": request.n,
         })
 
         # Generate image and wait for completion
@@ -140,30 +141,60 @@ class ImagePipelineService:
             **kwargs
         )
 
-        # Process result
-        if result.get("status") != "Ready":
-            raise HTTPException(
-                status_code=500,
-                detail=f"Flux generation failed: {result.get('status', 'Unknown error')}"
-            )
+        # Process result based on provider
+        if provider == "foundry":
+            data_entries = result.get("data") or result.get("output") or result.get("outputs")
+            if not data_entries:
+                raise HTTPException(status_code=500, detail="Flux response did not contain image data")
 
-        # Get image URL and download
-        image_url = result.get("result", {}).get("sample")
-        if not image_url:
-            raise HTTPException(status_code=500, detail="No image URL in Flux response")
+            formatted_data = []
+            for entry in data_entries:
+                entry_copy = dict(entry)
+                b64_data = entry_copy.get("b64_json")
+                image_url = entry_copy.get("url")
 
-        image_data = flux_client.download_image(image_url)
-        image_b64 = base64.b64encode(image_data).decode('utf-8')
+                if not b64_data and image_url:
+                    try:
+                        image_bytes = flux_client.download_image(image_url)
+                    except Exception as exc:  # pragma: no cover - HTTPException raised after
+                        logger.error("Failed to download Flux image: %s", exc)
+                        raise HTTPException(status_code=500, detail="Failed to download image from Flux response") from exc
+                    b64_data = base64.b64encode(image_bytes).decode("utf-8")
+                    entry_copy["b64_json"] = b64_data
 
-        # Format response to match existing structure
-        flux_response = {
-            "created": result.get("created_at", 0),
-            "data": [{
-                "b64_json": image_b64,
-                "url": image_url,
-                "revised_prompt": request.prompt
-            }]
-        }
+                if not b64_data:
+                    raise HTTPException(status_code=500, detail="Flux response missing image data")
+
+                entry_copy.setdefault("revised_prompt", request.prompt)
+                formatted_data.append(entry_copy)
+
+            flux_response = {
+                "created": result.get("created") or int(datetime.utcnow().timestamp()),
+                "data": formatted_data,
+            }
+        else:
+            # Process async provider (e.g., BFL)
+            if result.get("status") != "Ready":
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Flux generation failed: {result.get('status', 'Unknown error')}"
+                )
+
+            image_url = result.get("result", {}).get("sample")
+            if not image_url:
+                raise HTTPException(status_code=500, detail="No image URL in Flux response")
+
+            image_data = flux_client.download_image(image_url)
+            image_b64 = base64.b64encode(image_data).decode('utf-8')
+
+            flux_response = {
+                "created": result.get("created_at", 0),
+                "data": [{
+                    "b64_json": image_b64,
+                    "url": image_url,
+                    "revised_prompt": request.prompt
+                }]
+            }
 
         return ImageGenerationResponse(
             success=True,
@@ -315,10 +346,9 @@ class ImagePipelineService:
         self,
         request: ImageSaveRequest,
         *,
-        azure_storage_service: AzureBlobStorageService,
-        cosmos_service: Optional[CosmosDBService] = None,
+        dataverse_service: DataverseService,
     ) -> ImageSaveResponse:
-        """Persist generated images and optionally run analysis."""
+        """Persist generated images directly to Dataverse using file attachments."""
 
         if (
             not request.generation_response
@@ -348,29 +378,137 @@ class ImagePipelineService:
             img_file, filename, has_transparency = self._prepare_image_file(
                 img_data, request.prompt, idx
             )
-            image_metadata = combined_metadata.copy()
-            image_metadata["image_index"] = str(idx + 1)
-            image_metadata["total_images"] = str(len(images_data))
+            try:
+                image_metadata = combined_metadata.copy()
+                image_metadata["image_index"] = str(idx + 1)
+                image_metadata["total_images"] = str(len(images_data))
 
-            upload = UploadFile(filename=filename, file=img_file)
-            result = await azure_storage_service.upload_asset(
-                upload,
-                MediaType.IMAGE.value,
-                metadata=None,
-                folder_path=request.folder_path,
-            )
+                img_file.seek(0)
+                image_bytes = img_file.read()
 
-            if cosmos_service:
-                self._create_or_update_metadata(
-                    cosmos_service,
-                    result,
-                    request,
-                    has_transparency,
-                    image_metadata,
-                )
+                metadata_dict = {
+                    "media_type": "image",
+                    "blob_name": filename,
+                    "container": "dataverse",
+                    "filename": filename,
+                    "content_type": self._determine_content_type(img_data),
+                    "folder_path": request.folder_path,
+                    "prompt": request.prompt,
+                    "model": request.model,
+                    "has_transparency": has_transparency,
+                    "created_at": datetime.utcnow().isoformat(),
+                }
 
-            saved_images.append(result)
-            await upload.close()
+                # Add image dimensions if available
+                try:
+                    with Image.open(io.BytesIO(image_bytes)) as pil_img:
+                        metadata_dict["width"] = pil_img.width
+                        metadata_dict["height"] = pil_img.height
+                        metadata_dict["size"] = len(image_bytes)
+                except Exception as e:
+                    logger.warning(f"Failed to get image properties: {e}")
+                    metadata_dict.setdefault("size", len(image_bytes))
+                else:
+                    metadata_dict.setdefault("size", len(image_bytes))
+
+                # Add generation-specific metadata
+                quality = getattr(request, "quality", None)
+                if quality and quality != "auto":
+                    metadata_dict["quality"] = quality
+
+                background = getattr(request, "background", None)
+                if background and background != "auto":
+                    metadata_dict["background"] = background
+
+                output_format = getattr(request, "output_format", None)
+                if output_format:
+                    metadata_dict["output_format"] = output_format
+
+                # Add custom metadata
+                if image_metadata:
+                    custom_meta = {
+                        key: value
+                        for key, value in image_metadata.items()
+                        if value is not None
+                    }
+                    if custom_meta:
+                        metadata_dict["custom_metadata"] = custom_meta
+
+                try:
+                    dataverse_record = dataverse_service.create_asset_metadata(metadata_dict)
+                except DataverseError as exc:
+                    logger.error("Failed to create Dataverse metadata: %s", exc)
+                    raise HTTPException(status_code=503, detail="Dataverse service error")
+
+                asset_id = dataverse_record.get("id")
+                if not asset_id:
+                    raise HTTPException(status_code=500, detail="Dataverse did not return an asset identifier")
+
+                container_value = "dataverse"
+                blob_reference = filename
+                asset_url = f"/api/v1/gallery/assets/{asset_id}/content"
+
+                try:
+                    dataverse_service.upload_asset_file(
+                        asset_id,
+                        image_bytes,
+                        filename=filename,
+                        content_type=metadata_dict.get("content_type"),
+                    )
+                    try:
+                        dataverse_service.update_asset_metadata(asset_id, {"url": f"dataverse://{asset_id}"})
+                    except DataverseError as update_exc:
+                        logger.debug("Unable to update asset URL metadata for %s: %s", asset_id, update_exc)
+                except DataverseError as exc:
+                    logger.warning("Dataverse file upload failed for asset %s: %s", asset_id, exc)
+                    image_dir = os.path.abspath(settings.IMAGE_DIR)
+                    os.makedirs(image_dir, exist_ok=True)
+
+                    _, ext = os.path.splitext(filename or "")
+                    ext = ext or ".png"
+                    local_filename = f"{asset_id}{ext}"
+                    local_path = os.path.join(image_dir, local_filename)
+
+                    try:
+                        with open(local_path, "wb") as out_file:
+                            out_file.write(image_bytes)
+                    except Exception as write_exc:
+                        logger.error("Failed to write fallback file %s: %s", local_path, write_exc)
+                        raise HTTPException(status_code=500, detail="Failed to store asset")
+
+                    try:
+                        dataverse_service.update_asset_metadata(
+                            asset_id,
+                            {
+                                "container": "local",
+                                "url": f"/{settings.IMAGE_DIR.rstrip('/')}/{local_filename}",
+                                "blob_name": local_filename,
+                            },
+                        )
+                    except DataverseError as update_exc:
+                        logger.debug("Unable to update fallback metadata for %s: %s", asset_id, update_exc)
+
+                    container_value = "local"
+                    blob_reference = local_filename
+                    asset_url = f"/{settings.IMAGE_DIR.rstrip('/')}/{local_filename}"
+
+                result = {
+                    "success": True,
+                    "asset_id": asset_id,
+                    "blob_name": blob_reference,
+                    "container": container_value,
+                    "url": asset_url,
+                    "original_filename": filename,
+                    "content_type": metadata_dict.get("content_type"),
+                    "size": metadata_dict.get("size"),
+                    "width": metadata_dict.get("width"),
+                    "height": metadata_dict.get("height"),
+                    "folder_path": request.folder_path,
+                }
+
+                saved_images.append(result)
+            finally:
+                img_file.close()
 
         analysis_results: List[Dict[str, object]] = []
         analyzed = False
@@ -378,12 +516,12 @@ class ImagePipelineService:
         if (
             request.analyze
             and saved_images
-            and cosmos_service
+            and dataverse_service
         ):
             analyzed = True
             analysis_results = self._run_analysis_on_saved_images(
                 saved_images,
-                cosmos_service,
+                dataverse_service,
                 request,
             )
 
@@ -401,8 +539,7 @@ class ImagePipelineService:
         self,
         pipeline_request: ImagePipelineRequest,
         *,
-        azure_storage_service: Optional[AzureBlobStorageService] = None,
-        cosmos_service: Optional[CosmosDBService] = None,
+        dataverse_service: DataverseService,
         source_images: Optional[List[UploadFile]] = None,
         mask: Optional[UploadFile] = None,
     ) -> ImagePipelineResponse:
@@ -458,6 +595,18 @@ class ImagePipelineService:
                     )
                 )
             else:
+                # Parse width and height from size for Flux models
+                width = None
+                height = None
+                if pipeline_request.model.startswith("flux-") and pipeline_request.size and pipeline_request.size != "auto":
+                    try:
+                        width_str, height_str = pipeline_request.size.split("x")
+                        width = int(width_str)
+                        height = int(height_str)
+                    except (ValueError, AttributeError):
+                        # If parsing fails, leave as None and let the model use defaults
+                        pass
+                
                 generation_request = ImageGenerationRequest(
                     prompt=pipeline_request.prompt,
                     model=pipeline_request.model,
@@ -470,6 +619,8 @@ class ImagePipelineService:
                     background=pipeline_request.background,
                     moderation=pipeline_request.moderation,
                     user=pipeline_request.user,
+                    width=width,
+                    height=height,
                 )
                 generation_response = await self.generate(generation_request)
                 steps.append(
@@ -501,7 +652,7 @@ class ImagePipelineService:
         if (
             pipeline_request.save_options.enabled
             and generation_response
-            and azure_storage_service
+            and dataverse_service
         ):
             save_request = ImageSaveRequest(
                 generation_response=generation_response,
@@ -525,8 +676,7 @@ class ImagePipelineService:
             try:
                 save_response = await self.save(
                     save_request,
-                    azure_storage_service=azure_storage_service,
-                    cosmos_service=cosmos_service,
+                    dataverse_service=dataverse_service,
                 )
                 steps.append(
                     PipelineStepResult(
@@ -707,78 +857,30 @@ class ImagePipelineService:
                     metadata[str(key)] = value
         return metadata
 
-    def _create_or_update_metadata(
-        self,
-        cosmos_service: CosmosDBService,
-        upload_result: Dict[str, object],
-        request: ImageSaveRequest,
-        has_transparency: Optional[bool],
-        image_metadata: Dict[str, str],
-    ) -> None:
-        try:
-            asset_id = str(upload_result["blob_name"]).split(".")[0].split("/")[-1]
-            width_val = upload_result.get("width")
-            height_val = upload_result.get("height")
-            width = int(width_val) if width_val else None
-            height = int(height_val) if height_val else None
-
-            cosmos_metadata: Dict[str, object] = {
-                "id": asset_id,
-                "media_type": "image",
-                "blob_name": upload_result["blob_name"],
-                "container": upload_result["container"],
-                "url": upload_result["url"],
-                "filename": upload_result["original_filename"],
-                "size": upload_result.get("size"),
-                "content_type": upload_result.get("content_type"),
-                "folder_path": upload_result.get("folder_path"),
-                "prompt": request.prompt,
-                "model": request.model,
-            }
-
-            quality = getattr(request, "quality", None)
-            if quality and quality != "auto":
-                cosmos_metadata["quality"] = quality
-
-            background = getattr(request, "background", None)
-            if background and background != "auto":
-                cosmos_metadata["background"] = background
-
-            output_format = getattr(request, "output_format", None)
-            if output_format:
-                cosmos_metadata["output_format"] = output_format
-
-            if has_transparency is not None:
-                cosmos_metadata["has_transparency"] = has_transparency
-
-            if width is not None:
-                cosmos_metadata["width"] = width
-            if height is not None:
-                cosmos_metadata["height"] = height
-
-            custom_meta = {
-                key: value
-                for key, value in image_metadata.items()
-                if value is not None
-            }
-            if custom_meta:
-                cosmos_metadata["custom_metadata"] = custom_meta
-
-            cosmos_metadata = {
-                key: value for key, value in cosmos_metadata.items() if value is not None
-            }
-
-            cosmos_service.create_asset_metadata(cosmos_metadata)
-            logger.info(
-                "Created Cosmos DB metadata for image: %s", asset_id
-            )
-        except Exception as exc:
-            logger.warning("Failed to create Cosmos DB metadata: %s", exc)
+    def _determine_content_type(self, img_data: Dict[str, object]) -> str:
+        """Determine content type from image data"""
+        if "b64_json" in img_data:
+            # Try to determine from image format
+            try:
+                image_bytes = base64.b64decode(img_data["b64_json"])
+                with Image.open(io.BytesIO(image_bytes)) as img:
+                    img_format = img.format.lower() if img.format else "png"
+                    format_map = {
+                        "jpeg": "image/jpeg",
+                        "jpg": "image/jpeg", 
+                        "png": "image/png",
+                        "webp": "image/webp",
+                        "gif": "image/gif"
+                    }
+                    return format_map.get(img_format, "image/png")
+            except Exception:
+                pass
+        return "image/png"  # Default fallback
 
     def _run_analysis_on_saved_images(
         self,
         saved_images: List[Dict[str, object]],
-        cosmos_service: CosmosDBService,
+        dataverse_service: DataverseService,
         request: ImageSaveRequest,
     ) -> List[Dict[str, object]]:
         logger.info(
@@ -789,18 +891,24 @@ class ImagePipelineService:
 
         for saved_image in saved_images:
             try:
-                image_url = str(saved_image["url"])
-                blob_name = str(saved_image["blob_name"])
-                if "?" not in image_url:
-                    image_url = f"{image_url}?{image_sas_token}"
+                asset_id = str(saved_image["asset_id"])
+                
+                # Get image data from Dataverse
+                asset_metadata = dataverse_service.get_asset_metadata(asset_id, "image")
+                if not asset_metadata:
+                    raise Exception("Asset metadata not found in Dataverse")
 
-                response = requests.get(image_url, timeout=30)
-                if response.status_code != 200:
-                    raise Exception(
-                        f"Failed to download image: HTTP {response.status_code}"
-                    )
+                image_base64 = asset_metadata.get("image_data")
+                if not image_base64:
+                    try:
+                        file_bytes, _, _ = dataverse_service.download_asset_file(asset_id)
+                        if file_bytes:
+                            image_base64 = base64.b64encode(file_bytes).decode("utf-8")
+                    except DataverseError as download_exc:
+                        raise Exception(f"Unable to retrieve image file: {download_exc}") from download_exc
 
-                image_base64 = base64.b64encode(response.content).decode("utf-8")
+                if not image_base64:
+                    raise Exception("Image content not available for analysis")
                 custom_prompt = None
                 if request.metadata and request.metadata.get("analysis_prompt"):
                     custom_prompt = str(request.metadata["analysis_prompt"])
@@ -810,7 +918,6 @@ class ImagePipelineService:
                     custom_prompt or analyze_image_system_message,
                 )
 
-                asset_id = blob_name.split(".")[0].split("/")[-1]
                 analysis_data = {
                     "summary": analysis.get("description", "No summary provided"),
                     "products": analysis.get("products", "None identified"),
@@ -819,18 +926,17 @@ class ImagePipelineService:
                     "analyzed_at": datetime.utcnow().isoformat(),
                 }
 
-                cosmos_service.update_asset_metadata(
+                dataverse_service.update_asset_metadata(
                     asset_id,
-                    "image",
                     {
                         "analysis": analysis_data,
                         "has_analysis": True,
                     },
+                    media_type="image",
                 )
 
                 analysis_results.append(
                     {
-                        "blob_name": blob_name,
                         "asset_id": asset_id,
                         "analysis": analysis,
                         "success": True,
@@ -838,11 +944,11 @@ class ImagePipelineService:
                 )
             except Exception as exc:
                 logger.error(
-                    "Failed to analyze image %s: %s", saved_image.get("blob_name"), exc
+                    "Failed to analyze image %s: %s", saved_image.get("asset_id"), exc
                 )
                 analysis_results.append(
                     {
-                        "blob_name": saved_image.get("blob_name"),
+                        "asset_id": saved_image.get("asset_id"),
                         "error": str(exc),
                         "success": False,
                     }

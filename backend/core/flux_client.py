@@ -44,10 +44,17 @@ class FluxClient:
                 raise ValueError("BFL API key must be provided")
             logger.info("Initialized Flux client with BFL API")
         
-        self.headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
-        }
+        # For Foundry (Azure OpenAI style) use 'api-key' header; for BFL use Bearer
+        if self.provider == "foundry":
+            self.headers = {
+                "api-key": self.api_key,
+                "Content-Type": "application/json"
+            }
+        else:
+            self.headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            }
 
     def generate_image(self, prompt: str, model: str = "flux-pro", **kwargs) -> dict:
         """
@@ -64,12 +71,25 @@ class FluxClient:
         try:
             # Map model names to API endpoints based on provider
             if self.provider == "foundry":
-                model_endpoints = {
-                    "flux-pro": "flux/generate",
-                    "flux-pro-ultra": "flux/generate", 
-                    "flux-kontext": "flux/edit"
-                }
-                endpoint = f"{self.base_url}/v1/{model_endpoints.get(model, 'flux/generate')}"
+                # Prefer explicit per-deployment endpoints from settings if provided
+                if model == "flux-pro":
+                    endpoint = (
+                        settings.FOUNDRY_FLUX_PRO_ENDPOINT
+                        or (f"{self.base_url}/openai/deployments/{settings.FOUNDRY_DEPLOYMENT_FLUX_PRO}/images/generations?api-version={settings.AOAI_API_VERSION}")
+                    )
+                elif model == "flux-pro-ultra":
+                    # Use same deployment if not explicitly configured
+                    endpoint = (
+                        settings.FOUNDRY_FLUX_PRO_ENDPOINT
+                        or (f"{self.base_url}/openai/deployments/{settings.FOUNDRY_DEPLOYMENT_FLUX_PRO}/images/generations?api-version={settings.AOAI_API_VERSION}")
+                    )
+                elif model == "flux-kontext":
+                    endpoint = (
+                        settings.FOUNDRY_FLUX_KONTEXT_ENDPOINT
+                        or (f"{self.base_url}/openai/deployments/{settings.FOUNDRY_DEPLOYMENT_FLUX_KONTEXT}/images/generations?api-version={settings.AOAI_API_VERSION}")
+                    )
+                else:
+                    endpoint = f"{self.base_url}/v1/flux/generate"
             else:
                 # BFL endpoints
                 model_endpoints = {
@@ -143,6 +163,20 @@ class FluxClient:
             # Remove None values
             payload = {k: v for k, v in payload.items() if v is not None}
 
+            if self.provider == "foundry":
+                # Azure OpenAI-style deployments expect size instead of width/height
+                width = payload.pop("width", None)
+                height = payload.pop("height", None)
+                if width and height:
+                    payload["size"] = f"{width}x{height}"
+
+                # Ensure response format defaults to base64 JSON to align with existing pipeline
+                payload.setdefault("response_format", "b64_json")
+
+                # Forward quantity if provided
+                if kwargs.get("n") and kwargs.get("n") > 1:
+                    payload["n"] = kwargs.get("n")
+
             logger.info(f"Generating image with Flux {model}, prompt length: {len(prompt)}")
             
             # Make API request
@@ -150,6 +184,12 @@ class FluxClient:
             response.raise_for_status()
             
             result = response.json()
+            # Azure OpenAI / Foundry image generation typically returns image content or output in 'data' or 'outputs' immediately
+            if self.provider == "foundry":
+                # If the response doesn't contain a task 'id', return result immediately (synchronous image generation)
+                if not result.get('id'):
+                    logger.info("Foundry image generation returned synchronous result")
+                    return result
             logger.info(f"Flux {model} generation initiated with task ID: {result.get('id')}")
             
             return result
@@ -172,17 +212,23 @@ class FluxClient:
             dict: Task status and result if completed
         """
         try:
-            endpoint = f"{self.base_url}/v1/get_result"
-            params = {"id": task_id}
-            
-            response = requests.get(endpoint, params=params, headers=self.headers)
-            response.raise_for_status()
-            
-            return response.json()
-            
+            # For BFL-style provider, use the get_result endpoint
+            if self.provider != "foundry":
+                endpoint = f"{self.base_url}/v1/get_result"
+                params = {"id": task_id}
+                response = requests.get(endpoint, params=params, headers=self.headers)
+                response.raise_for_status()
+                return response.json()
+            else:
+                # For Foundry / Azure OpenAI, there is no generic get_result endpoint for image generations
+                # If Foundry provides an operations status endpoint, a specific config variable should be added.
+                raise NotImplementedError(
+                    "Task polling for Foundry deployments is not implemented. Foundry typically returns synchronous results for image generation."
+                )
+             
         except requests.exceptions.RequestException as e:
-            logger.error(f"Error getting task status: {str(e)}")
-            raise
+             logger.error(f"Error getting task status: {str(e)}")
+             raise
 
     def wait_for_completion(self, task_id: str, max_wait_time: int = 300, poll_interval: int = 5) -> dict:
         """
@@ -228,12 +274,16 @@ class FluxClient:
         """
         # Start generation
         result = self.generate_image(prompt, model, **kwargs)
+
+        # Foundry-hosted deployments typically return the generated content synchronously
+        if self.provider == "foundry":
+            return result
+
         task_id = result.get("id")
-        
         if not task_id:
             raise Exception("No task ID returned from Flux API")
-        
-        # Wait for completion
+
+        # Wait for completion when using asynchronous providers (e.g., BFL)
         return self.wait_for_completion(task_id, kwargs.get("max_wait_time", 300))
 
     def download_image(self, image_url: str) -> bytes:

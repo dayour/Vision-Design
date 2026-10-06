@@ -304,9 +304,13 @@ function NewVideoPageContent() {
   // and can be refreshed manually or with auto-refresh
   
   // Function to handle video deletion
-  const handleVideoDeleted = (deletedVideoName: string) => {
-    // Remove the deleted video from the state using the unique video name (blob name)
-    setVideos(prevVideos => prevVideos.filter(video => video.name !== deletedVideoName));
+  const handleVideoDeleted = (deletedAssetId: string) => {
+    // Remove the deleted video using whichever identifier we have available
+    setVideos(prevVideos => prevVideos.filter(video => {
+      const matchesId = video.id ? video.id === deletedAssetId : false;
+      const matchesName = video.name === deletedAssetId;
+      return !matchesId && !matchesName;
+    }));
     
     // If we've deleted a video, we might want to load another one to replace it
     if (hasMore && videos.length < limit * 2) {
@@ -722,9 +726,9 @@ function NewVideoPageContent() {
                             size={isLarge ? "large" : video.size}
                             className="w-full"
                             tags={sampleTags}
-                            id={video.id}
+                            assetId={video.id}
                             blobName={video.name}
-                            onDelete={() => handleVideoDeleted(video.name)}
+                            onDelete={() => handleVideoDeleted(video.id || video.name)}
                             onClick={() => handleVideoClick(video)}
                             autoPlay={autoPlay}
                           />

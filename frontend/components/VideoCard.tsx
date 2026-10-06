@@ -27,7 +27,7 @@ interface VideoCardProps {
   aspectRatio?: "16:9" | "4:3" | "1:1" | "9:16";
   className?: string;
   tags?: string[];
-  id?: string;
+  assetId?: string;
   blobName?: string;
   onDelete?: () => void;
   onMove?: () => void;
@@ -42,6 +42,7 @@ export function VideoCard({
   className,
   tags,
   blobName,
+  assetId,
   onDelete,
   onClick,
   autoPlay = true,
@@ -210,16 +211,16 @@ export function VideoCard({
 
   // Handle delete action
   const handleDelete = async () => {
-    if (!blobName) {
+    if (!assetId) {
       toast.error("Cannot delete video", {
-        description: "Missing blob name for the video"
+        description: "Missing asset identifier for the video"
       });
       return;
     }
 
     try {
       setIsDeleting(true);
-      const result = await deleteGalleryAsset(blobName, MediaType.VIDEO);
+      const result = await deleteGalleryAsset(assetId);
       
       if (result.success) {
         toast.success("Video deleted", {
@@ -396,16 +397,16 @@ export function VideoCard({
 
   // Handle moving a video to a folder
   const handleMove = async (folderPath: string) => {
-    if (!blobName) {
+    if (!assetId) {
       toast.error("Cannot move video", {
-        description: "Missing blob name for the video"
+        description: "Missing asset identifier for the video"
       });
       return;
     }
 
     try {
       setIsMoving(true);
-      const result = await moveAsset(blobName, folderPath, MediaType.VIDEO);
+      const result = await moveAsset(assetId, folderPath);
       
       if (result.success) {
         toast.success("Video moved", {

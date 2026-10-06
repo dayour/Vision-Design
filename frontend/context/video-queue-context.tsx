@@ -174,12 +174,17 @@ export function VideoQueueProvider({ children }: { children: React.ReactNode }) 
                     
                     if (analysisSettings?.analyzeVideo) {
                       try {
-                        // Wait 10 seconds for Azure Blob Storage to propagate the uploaded video
-                        await new Promise(resolve => setTimeout(resolve, 10000));
+                        // Wait 5 seconds for Dataverse to process the uploaded video
+                        await new Promise(resolve => setTimeout(resolve, 5000));
                         
-                        // Use the actual blob name returned from upload (includes folder path)
-                        const blobName = uploadResponse?.blob_name || fileName;
-                        await analyzeAndUpdateVideoMetadata(blobName);
+                        // Use the asset ID returned from upload for analysis
+                        const assetId = uploadResponse?.asset_id || uploadResponse?.file_id || fileName;
+                        const contentUrl = uploadResponse?.url || blobUrl;
+                        if (assetId && contentUrl) {
+                          await analyzeAndUpdateVideoMetadata(assetId, contentUrl);
+                        } else {
+                          console.warn(`Skipping analysis for ${generation.id} due to missing asset metadata`, { assetId, contentUrl });
+                        }
                         
                         // Don't show individual analysis toasts - we'll show a consolidated one later
                                               } catch (analysisError) {

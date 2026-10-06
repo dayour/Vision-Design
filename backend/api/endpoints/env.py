@@ -7,48 +7,78 @@ router = APIRouter()
 
 @router.get("/env/status", response_model=Dict[str, List[str]])
 def env_status():
-    """
-    Returns which environment variables are set and which are missing based on the Settings class.
-    """
-    # Required variables (must be set for the application to work properly)
-    required_vars = [
-        'SORA_AOAI_RESOURCE',
-        'SORA_AOAI_API_KEY',
-        'SORA_DEPLOYMENT',
-        'LLM_AOAI_RESOURCE',
-        'LLM_DEPLOYMENT',
-        'LLM_AOAI_API_KEY',
-        'IMAGEGEN_AOAI_RESOURCE',
-        'IMAGEGEN_DEPLOYMENT',
-        'IMAGEGEN_AOAI_API_KEY',
-        'AZURE_BLOB_SERVICE_URL',
-        'AZURE_STORAGE_ACCOUNT_NAME',
-        'AZURE_STORAGE_ACCOUNT_KEY',
-        'AZURE_BLOB_IMAGE_CONTAINER',
-        'AZURE_BLOB_VIDEO_CONTAINER',
-    ]
+    """Return which environment variables are configured versus missing."""
+    use_managed_identity = bool(getattr(settings, "DATAVERSE_USE_MANAGED_IDENTITY", False))
 
-    # Optional variables (app can function without them)
+    required_vars = ["DATAVERSE_ENVIRONMENT_URL"]
     optional_vars = [
+        "SORA_AOAI_RESOURCE",
+        "SORA_AOAI_API_KEY",
+        "SORA_DEPLOYMENT",
+        "LLM_AOAI_RESOURCE",
+        "LLM_DEPLOYMENT",
+        "LLM_AOAI_API_KEY",
+        "IMAGEGEN_AOAI_RESOURCE",
+        "IMAGEGEN_DEPLOYMENT",
+        "IMAGEGEN_AOAI_API_KEY",
+        "FOUNDRY_API_KEY",
+        "FOUNDRY_ENDPOINT",
+        "FOUNDRY_DEPLOYMENT_FLUX_PRO",
+        "FOUNDRY_FLUX_PRO_ENDPOINT",
+        "FOUNDRY_DEPLOYMENT_FLUX_KONTEXT",
+        "FOUNDRY_FLUX_KONTEXT_ENDPOINT",
+        "BFL_API_KEY",
+        "FLUX_MODEL_PROVIDER",
     ]
 
-    set_vars = []
-    missing_vars = []
+    if use_managed_identity:
+        optional_vars.extend([
+            "DATAVERSE_CLIENT_ID",
+            "DATAVERSE_CLIENT_SECRET",
+            "AZURE_TENANT_ID",
+        ])
+    else:
+        required_vars.extend([
+            "DATAVERSE_CLIENT_ID",
+            "DATAVERSE_CLIENT_SECRET",
+            "AZURE_TENANT_ID",
+        ])
 
-    # Check required vars using the settings object
+    optional_vars = list(dict.fromkeys(optional_vars))
+
+    def is_configured(var_name: str) -> bool:
+        if not hasattr(settings, var_name):
+            return False
+        value = getattr(settings, var_name)
+        if isinstance(value, bool):
+            return True
+        if value is None:
+            return False
+        if isinstance(value, str):
+            return value.strip() != ""
+        return True
+
+    set_vars: List[str] = []
+    missing_vars: List[str] = []
+
     for var in required_vars:
-        if hasattr(settings, var) and getattr(settings, var) is not None and getattr(settings, var) != "":
+        if is_configured(var):
             set_vars.append(var)
         else:
             missing_vars.append(var)
 
-    # Check optional vars using the settings object
     for var in optional_vars:
-        if hasattr(settings, var) and getattr(settings, var) is not None and getattr(settings, var) != "":
+        if is_configured(var):
             set_vars.append(var)
 
+    optional_missing = [var for var in optional_vars if var not in set_vars]
+
+    if use_managed_identity or getattr(settings, "DATAVERSE_USE_PAC_AUTH", False):
+        suppressed = {"DATAVERSE_CLIENT_ID", "DATAVERSE_CLIENT_SECRET", "AZURE_TENANT_ID"}
+        optional_missing = [var for var in optional_missing if var not in suppressed]
+
     return {
-        "set": set_vars,
-        "missing": missing_vars,
-        "optional_missing": [var for var in optional_vars if var not in set_vars]
+        "set": sorted(set_vars),
+        "missing": sorted(missing_vars),
+        "optional_missing": sorted(optional_missing),
     }

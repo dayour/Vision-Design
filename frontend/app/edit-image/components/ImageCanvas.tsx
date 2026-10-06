@@ -1,27 +1,27 @@
-'use client';
+"use client";
 
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
-import { 
-  Paintbrush, 
-  Eraser, 
-  UndoIcon,
-  RedoIcon,
-  KeyboardIcon,
-} from 'lucide-react';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { Slider } from '@/components/ui/slider';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { 
+  Paintbrush, 
+  Eraser,
+  Undo as UndoIcon,
+  Redo as RedoIcon,
+  Keyboard as KeyboardIcon
+} from 'lucide-react';
 import GenerateForm from './GenerateForm';
 
-// Tool types for drawing
+// Type definitions
 type DrawingTool = 'brush' | 'eraser';
-// Drawing action for history
-type DrawingAction = {
+
+interface DrawingAction {
   type: 'draw' | 'clear';
   data?: ImageData;
-};
+}
 
 interface ImageCanvasProps {
   image: {
@@ -569,11 +569,7 @@ export default function ImageCanvas({ image, onProceed }: ImageCanvasProps) {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {/* Drawing Canvas */}
           <Card className="relative flex items-center justify-center p-4 overflow-auto bg-muted/20 border-0 shadow-none">
-            <div 
-              style={{ 
-                position: 'relative'
-              }}
-            >
+            <div className="relative">
               {/* Base image canvas */}
               <canvas
                 ref={canvasRef}
@@ -587,17 +583,9 @@ export default function ImageCanvas({ image, onProceed }: ImageCanvasProps) {
                 ref={maskCanvasRef}
                 width={dimensions.width}
                 height={dimensions.height}
-                className={`absolute top-0 left-0 max-w-full ${showMask ? 'opacity-80' : 'opacity-0'} pointer-events-auto z-10 rounded-lg ${
-                  currentTool === 'brush' ? 'cursor-brush' : currentTool === 'eraser' ? 'cursor-eraser' : 'cursor-default'
+                className={`absolute top-0 left-0 max-w-full ${showMask ? 'opacity-80' : 'opacity-0'} pointer-events-auto z-10 rounded-lg mix-blend-screen ${
+                  currentTool === 'brush' || currentTool === 'eraser' ? 'cursor-crosshair' : 'cursor-default'
                 }`}
-                style={{ 
-                  mixBlendMode: 'screen',
-                  cursor: currentTool === 'brush' 
-                    ? `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23ffffff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='${brushSize/4}' fill='%23ffffff' stroke='%23000000' stroke-width='1'/%3E%3C/svg%3E") 12 12, crosshair` 
-                    : currentTool === 'eraser'
-                    ? `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23ffffff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='6' y='6' width='12' height='12' fill='%23ffffff' stroke='%23000000' stroke-width='1'/%3E%3C/svg%3E") 12 12, crosshair`
-                    : 'default'
-                }}
                 onMouseDown={startDrawing}
                 onMouseMove={draw}
                 onMouseUp={stopDrawing}

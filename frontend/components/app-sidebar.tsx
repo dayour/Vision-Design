@@ -1,15 +1,16 @@
 "use client"
 
-import { FileVideo, List, ImageIcon, FolderIcon, ImagePlus, Settings, ChevronDown, Pencil, CirclePlay, Loader2, Search } from "lucide-react"
+import { FileVideo, List, ImageIcon, FolderIcon, ImagePlus, Settings, ChevronDown, Pencil, CirclePlay, Loader2, Search, AlertCircle } from "lucide-react"
 import Link from 'next/link';
 import Image from 'next/image';
 import { useTheme } from "next-themes";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { useEffect, useState } from "react";
-import { fetchFolders, MediaType } from "@/services/api";
+import { fetchFoldersSafe, MediaType } from "@/services/api-enhanced";
 import { useRouter, usePathname, useSearchParams } from "next/navigation";
 import { useFolderContext } from "@/context/folder-context";
 import { motion } from "framer-motion";
+import type { ApiError } from "@/services/api-error";
 
 import {
   Sidebar,
@@ -92,6 +93,8 @@ export function AppSidebar() {
   const [isVideoFoldersOpen, setIsVideoFoldersOpen] = useState(true);
   const [isImageFoldersLoading, setIsImageFoldersLoading] = useState(true);
   const [isVideoFoldersLoading, setIsVideoFoldersLoading] = useState(true);
+  const [imageFoldersError, setImageFoldersError] = useState<ApiError | null>(null);
+  const [videoFoldersError, setVideoFoldersError] = useState<ApiError | null>(null);
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -107,26 +110,26 @@ export function AppSidebar() {
   useEffect(() => {
     const loadImageFolders = async () => {
       setIsImageFoldersLoading(true);
-      try {
-        const response = await fetchFolders(MediaType.IMAGE);
-        setImageFolders(response.folders);
-      } catch (error) {
-        console.error("Error fetching image folders:", error);
-      } finally {
-        setIsImageFoldersLoading(false);
+      setImageFoldersError(null);
+      const result = await fetchFoldersSafe(MediaType.IMAGE);
+      if (result.success) {
+        setImageFolders(result.data.folders);
+      } else {
+        setImageFoldersError(result.error);
       }
+      setIsImageFoldersLoading(false);
     };
 
     const loadVideoFolders = async () => {
       setIsVideoFoldersLoading(true);
-      try {
-        const response = await fetchFolders(MediaType.VIDEO);
-        setVideoFolders(response.folders);
-      } catch (error) {
-        console.error("Error fetching video folders:", error);
-      } finally {
-        setIsVideoFoldersLoading(false);
+      setVideoFoldersError(null);
+      const result = await fetchFoldersSafe(MediaType.VIDEO);
+      if (result.success) {
+        setVideoFolders(result.data.folders);
+      } else {
+        setVideoFoldersError(result.error);
       }
+      setIsVideoFoldersLoading(false);
     };
 
     loadImageFolders();
@@ -295,6 +298,13 @@ export function AppSidebar() {
                     {/* Video Folder List */}
                     {isVideoFoldersLoading ? (
                       renderFolderSkeletons()
+                    ) : videoFoldersError ? (
+                      <SidebarMenuItem>
+                        <div className="px-3 py-2 flex items-center text-xs text-destructive">
+                          <AlertCircle className="h-3 w-3 mr-2 flex-shrink-0" />
+                          <span className="flex-1">Failed to load</span>
+                        </div>
+                      </SidebarMenuItem>
                     ) : (
                       videoFolders.map((folder, index) => (
                         <motion.div
@@ -372,6 +382,13 @@ export function AppSidebar() {
                     {/* Image Folder List */}
                     {isImageFoldersLoading ? (
                       renderFolderSkeletons()
+                    ) : imageFoldersError ? (
+                      <SidebarMenuItem>
+                        <div className="px-3 py-2 flex items-center text-xs text-destructive">
+                          <AlertCircle className="h-3 w-3 mr-2 flex-shrink-0" />
+                          <span className="flex-1">Failed to load</span>
+                        </div>
+                      </SidebarMenuItem>
                     ) : (
                       imageFolders.map((folder, index) => (
                         <motion.div

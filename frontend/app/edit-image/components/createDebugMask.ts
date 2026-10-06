@@ -7,29 +7,38 @@ export function createAndShowDebugMask(
   originalWidth: number,
   originalHeight: number
 ): void {
+  console.log("Creating debug mask for visualization...");
+  console.log("Original drawing dimensions:", maskCanvas.width, "x", maskCanvas.height);
+  console.log("Target image dimensions:", originalWidth, "x", originalHeight);
+
   // Check aspect ratios
   const drawingAspectRatio = maskCanvas.width / maskCanvas.height;
   const targetAspectRatio = originalWidth / originalHeight;
-  
+
+  console.log("Drawing aspect ratio:", drawingAspectRatio.toFixed(2));
+  console.log("Target aspect ratio:", targetAspectRatio.toFixed(2));
+  console.log("Aspect ratio difference:", Math.abs(drawingAspectRatio - targetAspectRatio).toFixed(2));
+
   // Create a debug mask with proper dimensions
   const debugMaskUrl = createDebugMask(maskCanvas, originalWidth, originalHeight);
   if (!debugMaskUrl) return;
-  
+
   // Open in new tab
   const win = window.open();
   if (!win) {
+    console.error("Could not open debug window");
     return;
   }
-  
+
   // Calculate scale factors
   const scaleX = originalWidth / maskCanvas.width;
   const scaleY = originalHeight / maskCanvas.height;
-  
+
   // Check for content in the original mask
-  const maskCtx = maskCanvas.getContext('2d');
+  const maskCtx = maskCanvas.getContext('2d', { willReadFrequently: true });
   let pixelsWithDrawing = 0;
   const totalPixels = maskCanvas.width * maskCanvas.height;
-  
+
   if (maskCtx) {
     const maskData = maskCtx.getImageData(0, 0, maskCanvas.width, maskCanvas.height);
     for (let i = 0; i < maskData.data.length; i += 4) {
@@ -38,7 +47,7 @@ export function createAndShowDebugMask(
       }
     }
   }
-  
+
   // Write HTML content with debug info
   win.document.write(`
     <html>
@@ -123,8 +132,8 @@ export function createAndShowDebugMask(
           <div>Final mask dimensions: ${originalWidth}x${originalHeight}</div>
           <div>Scale factor: ${scaleX.toFixed(2)}x${scaleY.toFixed(2)}</div>
           <div>Drawing content: ${pixelsWithDrawing} pixels (${((pixelsWithDrawing / totalPixels) * 100).toFixed(2)}% of drawing)</div>
-          ${Math.abs(drawingAspectRatio - targetAspectRatio) > 0.01 ? 
-            `<div class="warning">WARNING: Aspect ratio mismatch! Drawing (${drawingAspectRatio.toFixed(2)}) vs Image (${targetAspectRatio.toFixed(2)})</div>` : 
+          ${Math.abs(drawingAspectRatio - targetAspectRatio) > 0.01 ?
+            `<div class="warning">WARNING: Aspect ratio mismatch! Drawing (${drawingAspectRatio.toFixed(2)}) vs Image (${targetAspectRatio.toFixed(2)})</div>` :
             ''}
         </div>
         <div class="container">
@@ -157,55 +166,66 @@ export function createAndShowDebugMask(
 
 /**
  * Creates a debug mask in the exact format expected by Azure OpenAI's image editing API
- * @returns URL for the debug mask image
+ * @returns Data URL for the debug mask image, or undefined on error
  */
 export function createDebugMask(
-  maskCanvas: HTMLCanvasElement,
+  maskCanvas: HTMLCanvasElement | null,
   originalWidth: number,
   originalHeight: number
 ): string | undefined {
+  if (!maskCanvas) {
+    console.error("createDebugMask: maskCanvas is null");
+    return undefined;
+  }
+
   console.log("Creating debug mask...");
-  
+
   // Validate input dimensions
   if (maskCanvas.width <= 0 || maskCanvas.height <= 0) {
     console.error("Invalid mask canvas dimensions:", maskCanvas.width, "x", maskCanvas.height);
     return undefined;
   }
-  
+
   if (originalWidth <= 0 || originalHeight <= 0) {
     console.error("Invalid original image dimensions:", originalWidth, "x", originalHeight);
     return undefined;
   }
-  
+
   // Create a canvas for the debug mask with correct dimensions
   const debugMaskCanvas = document.createElement('canvas');
   debugMaskCanvas.width = originalWidth;
   debugMaskCanvas.height = originalHeight;
-  
+
   const ctx = debugMaskCanvas.getContext('2d', { willReadFrequently: true });
-  if (!ctx) return undefined;
-  
+  if (!ctx) {
+    console.error("Failed to get 2d context for debug mask canvas");
+    return undefined;
+  }
+
   // Fill the debug mask with opaque black (areas to preserve)
   ctx.fillStyle = '#000000';
   ctx.fillRect(0, 0, debugMaskCanvas.width, debugMaskCanvas.height);
-  
+
   // Get the mask drawing and scale it properly
   const maskCtx = maskCanvas.getContext('2d', { willReadFrequently: true });
-  if (!maskCtx) return undefined;
-  
+  if (!maskCtx) {
+    console.error("Failed to get 2d context for mask canvas");
+    return undefined;
+  }
+
   try {
     // Get original mask data
     const originalMaskData = maskCtx.getImageData(0, 0, maskCanvas.width, maskCanvas.height);
-    
+
     // Create a new ImageData for the scaled mask
     const scaledMaskData = ctx.createImageData(originalWidth, originalHeight);
-    
+
     // Calculate scale factors
     const scaleX = originalWidth / maskCanvas.width;
     const scaleY = originalHeight / maskCanvas.height;
-    
+
     console.log("Scale factors:", scaleX.toFixed(2), "x", scaleY.toFixed(2));
-    
+
     // Initialize all pixels as opaque black (areas to preserve)
     for (let i = 0; i < scaledMaskData.data.length; i += 4) {
       scaledMaskData.data[i] = 0;       // R = 0
@@ -213,28 +233,28 @@ export function createDebugMask(
       scaledMaskData.data[i + 2] = 0;   // B = 0
       scaledMaskData.data[i + 3] = 255; // Alpha = 255 (fully opaque)
     }
-    
+
     // For each pixel in the target image
     let transparentPixels = 0;
     const totalPixels = originalWidth * originalHeight;
-    
+
     // For each pixel in the target image
     for (let y = 0; y < originalHeight; y++) {
       for (let x = 0; x < originalWidth; x++) {
         // Find the corresponding pixel in the source mask
         const sourceX = Math.floor(x / scaleX);
         const sourceY = Math.floor(y / scaleY);
-        
+
         // Make sure we're within bounds of the source
-        if (sourceX >= 0 && sourceX < maskCanvas.width && 
+        if (sourceX >= 0 && sourceX < maskCanvas.width &&
             sourceY >= 0 && sourceY < maskCanvas.height) {
-          
+
           // Get index in source data
           const sourceIndex = (sourceY * maskCanvas.width + sourceX) * 4;
-          
+
           // Get index in target data
           const targetIndex = (y * originalWidth + x) * 4;
-          
+
           // If source pixel has alpha > 0 (was drawn on), make target pixel transparent
           if (originalMaskData.data[sourceIndex + 3] > 0) {
             // Make pixel transparent (area to edit)
@@ -244,12 +264,16 @@ export function createDebugMask(
         }
       }
     }
-    
+
     console.log(`Transparent pixels in final mask: ${transparentPixels} (${((transparentPixels / totalPixels) * 100).toFixed(2)}% of image)`);
-    
+
+    if (transparentPixels === 0) {
+      console.warn("WARNING: Final mask has no transparent pixels! API will not edit any part of the image.");
+    }
+
     // Put the modified data back to the debug canvas
     ctx.putImageData(scaledMaskData, 0, 0);
-    
+
     // Return data URL
     return debugMaskCanvas.toDataURL('image/png');
   } catch (error) {

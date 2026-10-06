@@ -19,7 +19,7 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse
 
-from backend.core import llm_client, sora_client, video_sas_token
+from backend.core import llm_client, sora_client
 from backend.core.analyze import VideoAnalyzer, VideoExtractor
 from backend.core.config import settings
 from backend.core.instructions import (
@@ -39,7 +39,7 @@ from backend.models.videos import (
     VideoPromptEnhancementRequest,
     VideoPromptEnhancementResponse,
 )
-from backend.core.cosmos_client import CosmosDBService
+from backend.core.dataverse_service import DataverseService, DataverseError, DataverseAuthenticationError
 
 
 # Set up logging
@@ -47,20 +47,20 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-def get_cosmos_service() -> Optional[CosmosDBService]:
-    """Dependency to get Cosmos DB service instance (optional)"""
+def get_dataverse_service() -> Optional[DataverseService]:
+    """Dependency to get Dataverse service instance (optional)"""
     try:
         # Check if we have either managed identity or key-based auth configured
-        if settings.AZURE_COSMOS_DB_ENDPOINT and (
-            settings.USE_MANAGED_IDENTITY or settings.AZURE_COSMOS_DB_KEY
+        if settings.AZURE_Dataverse_ENDPOINT and (
+            settings.USE_MANAGED_IDENTITY or settings.AZURE_Dataverse_KEY
         ):
-            return CosmosDBService()
+            return DataverseService()
         return None
     except Exception as e:
         import logging
 
         logger = logging.getLogger(__name__)
-        logger.warning(f"Cosmos DB service unavailable: {e}")
+        logger.warning(f"Dataverse service unavailable: {e}")
         return None
 
 
@@ -252,7 +252,7 @@ async def create_video_generation_with_analysis_upload(
     folder_path: str = Form(""),
     metadata: Optional[str] = Form(None),
     images: Optional[List[UploadFile]] = File(None),
-    cosmos_service: Optional[CosmosDBService] = Depends(get_cosmos_service),
+    dataverse_service: Optional[DataverseService] = Depends(get_dataverse_service),
 ):
     """
     Unified endpoint: create a video generation job (with or without source images),
@@ -260,11 +260,9 @@ async def create_video_generation_with_analysis_upload(
     """
     import tempfile
     import requests
-    from azure.storage.blob import ContentSettings
-    from backend.core.azure_storage import AzureBlobStorageService
 
     try:
-        logger.info(f"Cosmos DB service available: {cosmos_service is not None}")
+        logger.info(f"Dataverse service available: {dataverse_service is not None}")
         if sora_client is None:
             raise HTTPException(status_code=503, detail="Video generation service is currently unavailable.")
         if analyze_video and llm_client is None:
@@ -366,82 +364,43 @@ async def create_video_generation_with_analysis_upload(
                     )
                     analysis_results.append(analysis_result)
 
-                    # Upload to gallery with metadata
-                    azure_service = AzureBlobStorageService()
-                    base_filename = generation.get("filename") or f"{re.sub(r'[^a-zA-Z0-9_\-]', '_', prompt.strip()[:50])}_{generation_id}.mp4"
-                    final_filename = base_filename
-                    normalized_folder = ""
-                    if selected_folder and selected_folder != "root":
-                        normalized_folder = azure_service.normalize_folder_path(selected_folder)
-                        final_filename = f"{normalized_folder}{base_filename}"
-
-                    container_client = azure_service.blob_service_client.get_container_client("videos")
-                    blob_client = container_client.get_blob_client(final_filename)
-
-                    # Build upload metadata
-                    analysis_data = {
-                        "summary": analysis_result.summary,
-                        "products": analysis_result.products,
-                        "tags": analysis_result.tags,
-                        "feedback": analysis_result.feedback,
-                        "analyzed_at": datetime.now().isoformat(),
-                    }
-                    upload_metadata = {
-                        "generation_id": generation_id,
-                        "prompt": prompt,
-                        "analysis": analysis_data,
-                        "has_analysis": True,
-                        "upload_date": datetime.now().isoformat(),
-                    }
-                    if selected_folder and selected_folder != "root":
-                        upload_metadata["folder_path"] = normalized_folder
-
-                    processed_metadata = {}
-                    for k, v in upload_metadata.items():
-                        if v is not None:
-                            processed_metadata[k] = azure_service._preprocess_metadata_value(str(v))
-
-                    with open(downloaded_path, "rb") as video_file:
-                        blob_client.upload_blob(
-                            data=video_file,
-                            content_settings=ContentSettings(content_type="video/mp4"),
-                            metadata=processed_metadata,
-                            overwrite=True,
-                        )
-
-                    blob_url = blob_client.url
-
-                    # Create Cosmos DB metadata record if available
-                    if cosmos_service:
-                        try:
-                            asset_id = final_filename.split(".")[0].split("/")[-1]
-                            video_info = os.stat(downloaded_path)
-                            cosmos_metadata = {
-                                "id": asset_id,
-                                "media_type": "video",
-                                "blob_name": final_filename,
-                                "container": "videos",
-                                "url": blob_url,
-                                "filename": base_filename,
-                                "size": video_info.st_size,
-                                "content_type": "video/mp4",
-                                "folder_path": normalized_folder,
-                                "prompt": prompt,
-                                "model": "sora",
-                                "generation_id": generation_id,
-                                "analysis": analysis_data,
-                                "has_analysis": True,
-                                "duration": n_seconds,
-                                "resolution": f"{width}x{height}",
-                                "custom_metadata": {
-                                    "n_variants": str(n_variants),
-                                    "analyzed": "true",
-                                    "job_id": job_response.id,
-                                },
-                            }
-                            cosmos_service.create_asset_metadata(cosmos_metadata)
-                        except Exception as cosmos_error:
-                            logger.error(f"Failed to create Cosmos DB metadata: {cosmos_error}")
+                    # Store video metadata in Dataverse with base64 data
+                    import base64
+                    
+                    # Read video file as base64 for Dataverse storage
+                    try:
+                        with open(downloaded_path, 'rb') as video_file:
+                            video_bytes = video_file.read()
+                            video_b64 = base64.b64encode(video_bytes).decode('utf-8')
+                            
+                        # Create video metadata for Dataverse
+                        video_metadata = {
+                            "id": str(uuid.uuid4()),
+                            "media_type": "video",
+                            "blob_name": base_filename,
+                            "container": "dataverse",
+                            "url": f"dataverse://{generation_id}",
+                            "filename": base_filename,
+                            "size": os.path.getsize(downloaded_path),
+                            "content_type": "video/mp4",
+                            "folder_path": normalized_folder,
+                            "prompt": prompt,
+                            "model": "sora",
+                            "video_data": video_b64,  # Store video as base64
+                            "generation_id": generation_id,
+                            "created_at": datetime.utcnow().isoformat(),
+                        }
+                        
+                        # Store in Dataverse
+                        if dataverse_service:
+                            try:
+                                dataverse_service.create_asset_metadata(video_metadata)
+                                logger.info(f"Successfully stored video metadata in Dataverse: {generation_id}")
+                            except Exception as dataverse_error:
+                                logger.error(f"Failed to store video metadata in Dataverse: {dataverse_error}")
+                        
+                    except Exception as e:
+                        logger.error(f"Failed to process video for Dataverse storage: {e}")
 
                 finally:
                     try:
@@ -467,23 +426,23 @@ async def create_video_generation_with_analysis_upload(
 )
 def create_video_generation_with_analysis(
     req: VideoGenerationWithAnalysisRequest,
-    cosmos_service: Optional[CosmosDBService] = Depends(get_cosmos_service),
+    dataverse_service: Optional[DataverseService] = Depends(get_dataverse_service),
 ):
     """
     Create a video generation job and optionally analyze the results
-    Enhanced with Cosmos DB metadata storage
+    Enhanced with Dataverse metadata storage
     """
     import tempfile
     import requests
 
     try:
         # Log service availability for debugging
-        logger.info(f"Cosmos DB service available: {cosmos_service is not None}")
-        logger.info(f"Cosmos DB config - Endpoint: {settings.AZURE_COSMOS_DB_ENDPOINT is not None}, "
+        logger.info(f"Dataverse service available: {cosmos_service is not None}")
+        logger.info(f"Dataverse config - Endpoint: {settings.AZURE_Dataverse_ENDPOINT is not None}, "
                    f"Use Managed Identity: {settings.USE_MANAGED_IDENTITY}, "
-                   f"Has Key: {settings.AZURE_COSMOS_DB_KEY is not None}")
-        if cosmos_service:
-            logger.info("Cosmos DB service initialized successfully for video generation")
+                   f"Has Key: {settings.AZURE_Dataverse_KEY is not None}")
+        if dataverse_service:
+            logger.info("Dataverse service initialized successfully for video generation")
         # Ensure required clients are available
         if sora_client is None:
             raise HTTPException(
@@ -598,173 +557,6 @@ def create_video_generation_with_analysis(
                             f"Analysis completed for generation {generation_id}"
                         )
 
-                        # Upload the video to Azure Blob Storage for gallery
-                        try:
-                            from backend.core.azure_storage import (
-                                AzureBlobStorageService,
-                            )
-                            from azure.storage.blob import ContentSettings
-
-                            azure_service = AzureBlobStorageService()
-
-                            # Generate proper filename using the dedicated API
-                            try:
-                                filename_req = VideoFilenameGenerateRequest(
-                                    prompt=req.prompt,
-                                    gen_id=generation_id,
-                                    extension=".mp4",
-                                )
-                                filename_response = generate_video_filename(
-                                    filename_req
-                                )
-                                base_filename = filename_response.filename
-                            except Exception as filename_error:
-                                logger.warning(
-                                    f"Failed to generate filename using API: {filename_error}"
-                                )
-                                sanitized_prompt = re.sub(
-                                    r"[^a-zA-Z0-9_\-]", "_", req.prompt.strip()[:50]
-                                )
-                                base_filename = (
-                                    f"{sanitized_prompt}_{generation_id}.mp4"
-                                )
-
-                            # Extract folder path from request metadata and normalize it
-                            folder_path = (
-                                req.metadata.get("folder") if req.metadata else None
-                            )
-                            final_filename = base_filename
-
-                            if folder_path and folder_path != "root":
-                                normalized_folder = azure_service.normalize_folder_path(
-                                    folder_path
-                                )
-                                final_filename = f"{normalized_folder}{base_filename}"
-                                logger.info(
-                                    f"Uploading video to folder: {normalized_folder}"
-                                )
-                            else:
-                                logger.info("Uploading video to root directory")
-
-                            # Upload to Azure Blob Storage
-                            container_client = (
-                                azure_service.blob_service_client.get_container_client(
-                                    "videos"
-                                )
-                            )
-                            blob_client = container_client.get_blob_client(
-                                final_filename
-                            )
-
-                            # Prepare metadata for blob storage with nested analysis structure
-                            analysis_data = {
-                                "summary": analysis_result.summary,
-                                "products": analysis_result.products,
-                                "tags": analysis_result.tags,
-                                "feedback": analysis_result.feedback,
-                                "analyzed_at": datetime.now().isoformat(),
-                            }
-                            
-                            upload_metadata = {
-                                "generation_id": generation_id,
-                                "prompt": req.prompt,
-                                "analysis": analysis_data,
-                                "has_analysis": True,
-                                "upload_date": datetime.now().isoformat(),
-                            }
-
-                            if folder_path and folder_path != "root":
-                                upload_metadata["folder_path"] = (
-                                    azure_service.normalize_folder_path(folder_path)
-                                )
-
-                            # Preprocess metadata values for Azure compatibility
-                            processed_metadata = {}
-                            for k, v in upload_metadata.items():
-                                if v is not None:
-                                    processed_metadata[k] = (
-                                        azure_service._preprocess_metadata_value(str(v))
-                                    )
-
-                            # Read the file and upload with metadata
-                            with open(downloaded_path, "rb") as video_file:
-                                blob_client.upload_blob(
-                                    data=video_file,
-                                    content_settings=ContentSettings(
-                                        content_type="video/mp4"
-                                    ),
-                                    metadata=processed_metadata,
-                                    overwrite=True,
-                                )
-
-                            blob_url = blob_client.url
-                            logger.info(f"Uploaded video to gallery: {blob_url}")
-
-                            # Create metadata record in Cosmos DB if available
-                            if cosmos_service:
-                                try:
-                                    # Extract asset ID from blob name
-                                    asset_id = final_filename.split(".")[0].split("/")[
-                                        -1
-                                    ]
-
-                                    # Get video file info for metadata
-                                    video_info = os.stat(downloaded_path)
-
-                                    # Prepare enhanced metadata for Cosmos DB
-                                    cosmos_metadata = {
-                                        "id": asset_id,
-                                        "media_type": "video",
-                                        "blob_name": final_filename,
-                                        "container": "videos",
-                                        "url": blob_url,
-                                        "filename": base_filename,
-                                        "size": video_info.st_size,
-                                        "content_type": "video/mp4",
-                                        "folder_path": normalized_folder
-                                        if folder_path and folder_path != "root"
-                                        else "",
-                                        "prompt": req.prompt,
-                                        "model": "sora",
-                                        "generation_id": generation_id,
-                                        "analysis": {
-                                            "summary": analysis_result.summary,
-                                            "products": analysis_result.products,
-                                            "tags": analysis_result.tags,
-                                            "feedback": analysis_result.feedback,
-                                            "analyzed_at": datetime.now().isoformat(),
-                                        },
-                                        "has_analysis": True,
-                                        "duration": req.n_seconds,
-                                        "resolution": f"{req.width}x{req.height}",
-                                        "custom_metadata": {
-                                            "n_variants": str(req.n_variants),
-                                            "analyzed": "true",
-                                            "job_id": job_response.id,
-                                        },
-                                    }
-
-                                    logger.info(f"Attempting to create Cosmos DB metadata for video: {asset_id}")
-                                    cosmos_service.create_asset_metadata(
-                                        cosmos_metadata
-                                    )
-                                    logger.info(
-                                        f"Successfully created Cosmos DB metadata for video: {asset_id}"
-                                    )
-                                except Exception as cosmos_error:
-                                    logger.error(
-                                        f"Failed to create Cosmos DB metadata for video {asset_id}: {cosmos_error}"
-                                    )
-                                    import traceback
-                                    logger.error(f"Cosmos DB error traceback: {traceback.format_exc()}")
-                            else:
-                                logger.warning(f"Cosmos DB service not available - skipping metadata creation for video {generation_id}")
-
-                        except Exception as upload_error:
-                            logger.warning(
-                                f"Failed to upload video to gallery: {upload_error}"
-                            )
-
                     finally:
                         # Clean up temporary files
                         try:
@@ -868,7 +660,7 @@ def analyze_video(req: VideoAnalyzeRequest):
     Analyze a video by extracting frames and generating insights using an LLM.
 
     Args:
-        video_path: Video path on Azure Blob Storage. Supports a full URL with or without a SAS token. Backend will add the SAS token for the video container if not provided.
+        video_path: Video path on Dataverse. Supports a full URL with or without a SAS token. Backend will add the SAS token for the video container if not provided.
 
     Returns:
         Response containing summary, products, tags, and feedback generated by the LLM.
@@ -879,21 +671,18 @@ def analyze_video(req: VideoAnalyzeRequest):
     try:
         file_path = req.video_path
 
-        # check if the path is a valid Azure blob storage path
+        # check if the path is a valid Dataverse path
         pattern = r"^https://[a-z0-9]+\.blob\.core\.windows\.net/[a-z0-9]+/.+"
         match = re.match(pattern, file_path)
 
         if not match:
-            raise ValueError("Invalid Azure blob storage path")
-        else:
-            # check if the path contains a SAS token
-            if "?" not in file_path:
-                file_path += f"?{video_sas_token}"
+            raise ValueError("Invalid Dataverse path")
+        # Note: SAS token handling removed - using Dataverse authentication
 
         # Download the video file to a temporary location with retry logic
-        logger.info(f"Downloading video from Azure Blob Storage: {file_path}")
+        logger.info(f"Downloading video from Dataverse: {file_path}")
 
-        # Retry logic for Azure Blob Storage propagation delays
+        # Retry logic for Dataverse propagation delays
         max_retries = 3
         retry_delay = 5  # seconds
 

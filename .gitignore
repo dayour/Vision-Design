@@ -181,3 +181,12 @@ videos
 # Visionary Lab
 notebooks/video-generations/
 frontend/lighthouse-report.html
+
+node_modules/
+.env.backup
+*.bak
+response.json
+last_asset_id.txt
+test.txt
+test_generation.json
+frontend/test_image.png

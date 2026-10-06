@@ -1,3 +1,8 @@
+"""
+Gallery API endpoints using Dataverse as the sole storage and metadata system.
+Images are stored as Dataverse file attachments with metadata records.
+"""
+
 from fastapi import (
     APIRouter,
     HTTPException,
@@ -7,20 +12,22 @@ from fastapi import (
     File,
     Form,
     Body,
-    BackgroundTasks,
 )
 from typing import Dict, List, Optional, Any
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response
 import io
-import re
 import os
-import uuid
 import logging
-from datetime import datetime, timedelta, timezone
-from azure.storage.blob import generate_container_sas, ContainerSasPermissions
+import base64
+from datetime import datetime, timezone
+from PIL import Image
 
-from backend.core.azure_storage import AzureBlobStorageService
-from backend.core.cosmos_client import CosmosDBService
+from backend.core.dataverse_service import (
+    DataverseService,
+    DataverseError,
+    DataverseAuthenticationError,
+    DataverseRecordNotFoundError,
+)
 from backend.core.config import settings
 from backend.models.gallery import (
     GalleryResponse,
@@ -31,7 +38,6 @@ from backend.models.gallery import (
     AssetUrlResponse,
     AssetMetadataResponse,
     MetadataUpdateRequest,
-    SasTokenResponse,
 )
 from backend.models.metadata_models import AssetMetadataCreateRequest
 
@@ -41,19 +47,115 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def get_cosmos_service() -> Optional[CosmosDBService]:
-    """Dependency to get Cosmos DB service instance (optional)"""
+def get_dataverse_service() -> DataverseService:
+    """Dependency to get Dataverse service instance (required)"""
     try:
-        # Check if we have either managed identity or key-based auth configured
-        if settings.AZURE_COSMOS_DB_ENDPOINT and (
-            settings.USE_MANAGED_IDENTITY or settings.AZURE_COSMOS_DB_KEY
-        ):
-            return CosmosDBService()
-        return None
+        return DataverseService()
     except Exception as e:
-        # Log error but don't fail - Cosmos DB is optional
-        logger.warning(f"Cosmos DB service unavailable: {e}")
-        return None
+        logger.error(f"Failed to initialize Dataverse service: {e}")
+        raise HTTPException(status_code=503, detail="Dataverse service unavailable")
+
+
+def _build_gallery_item(metadata: Dict[str, Any]) -> GalleryItem:
+    """Convert Dataverse metadata into a gallery item."""
+    asset_id = metadata.get("id")
+    if not asset_id:
+        raise ValueError("Asset metadata missing id")
+
+    media_type_value = metadata.get("media_type") or "image"
+    media_type_str = str(media_type_value).lower()
+    try:
+        media_type_enum = MediaType(media_type_value)
+    except ValueError:
+        media_type_enum = MediaType.VIDEO if "video" in media_type_str else MediaType.IMAGE
+
+    name = metadata.get("filename") or metadata.get("blob_name") or str(asset_id)
+    container = metadata.get("container") or "dataverse"
+
+    size_value = metadata.get("size")
+    if isinstance(size_value, str):
+        try:
+            size = int(size_value)
+        except ValueError:
+            size = 0
+    elif size_value is None:
+        size = 0
+    else:
+        size = int(size_value)
+
+    creation_time = metadata.get("created_at")
+    if not creation_time:
+        creation_time = datetime.now(timezone.utc).isoformat()
+    last_modified = metadata.get("updated_at") or creation_time
+    folder_path = metadata.get("folder_path") or ""
+
+    details: Dict[str, Any] = {}
+
+    def add_detail(key: str, value: Any) -> None:
+        if value is not None:
+            details[key] = value
+
+    add_detail("prompt", metadata.get("prompt"))
+    add_detail("model", metadata.get("model"))
+    add_detail("quality", metadata.get("quality"))
+    add_detail("background", metadata.get("background"))
+    add_detail("output_format", metadata.get("output_format"))
+    add_detail("has_transparency", metadata.get("has_transparency"))
+    add_detail("width", metadata.get("width"))
+    add_detail("height", metadata.get("height"))
+    add_detail("description", metadata.get("description"))
+    add_detail("analysis", metadata.get("analysis"))
+    add_detail("has_analysis", metadata.get("has_analysis"))
+    add_detail("custom_metadata", metadata.get("custom_metadata"))
+    add_detail("source_url", metadata.get("url"))
+
+    if media_type_enum == MediaType.VIDEO:
+        add_detail("duration", metadata.get("duration"))
+        add_detail("fps", metadata.get("fps"))
+        add_detail("resolution", metadata.get("resolution"))
+
+    tags = metadata.get("tags")
+    if tags:
+        details["tags"] = tags
+
+    analysis = metadata.get("analysis")
+    if isinstance(analysis, dict):
+        summary = analysis.get("summary")
+        if summary:
+            details.setdefault("summary", summary)
+        analysis_tags = analysis.get("tags")
+        if analysis_tags:
+            details.setdefault("analysis_tags", analysis_tags)
+    else:
+        summary = metadata.get("summary")
+        if summary:
+            details.setdefault("summary", summary)
+
+    content_type = metadata.get("content_type") or "image/png"
+    data_url = f"/api/v1/gallery/assets/{asset_id}/content"
+
+    # Support older records that stored inline base64 data
+    image_data_b64 = metadata.get("image_data")
+    if image_data_b64:
+        try:
+            data_url = f"data:{content_type};base64,{image_data_b64}"
+        except Exception:
+            logger.debug("Failed to build data URL from inline image_data; falling back to content endpoint")
+            data_url = f"/api/v1/gallery/assets/{asset_id}/content"
+
+    return GalleryItem(
+        id=str(asset_id),
+        name=name,
+        media_type=media_type_enum,
+        url=data_url,
+        container=container,
+        size=size,
+        content_type=content_type,
+        creation_time=creation_time,
+        last_modified=last_modified,
+        metadata=details or None,
+        folder_path=folder_path,
+    )
 
 
 @router.get("/images", response_model=GalleryResponse)
@@ -66,898 +168,461 @@ async def get_gallery_images(
         None, description="Optional folder path to filter assets"
     ),
     tags: Optional[str] = Query(
-        None, description="Comma-separated tags to filter by"),
-    cosmos_service: Optional[CosmosDBService] = Depends(get_cosmos_service),
+        None, description="Comma-separated tags to filter by"
+    ),
+    dataverse_service: DataverseService = Depends(get_dataverse_service),
 ):
-    """Get gallery images from Cosmos DB metadata ONLY"""
+    """Get gallery images from Dataverse"""
     try:
-        # Check if Cosmos DB service is available
-        if not cosmos_service:
-            logger.error("Cosmos DB service is not available")
-            raise HTTPException(
-                status_code=503,
-                detail="Cosmos DB service is not available. Please check your configuration.",
-            )
-
         # Parse tags if provided
         tag_list = None
         if tags:
-            tag_list = [tag.strip() for tag in tags.split(",") if tag.strip()]
+            tag_list = [tag.strip() for tag in tags.split(',') if tag.strip()]
 
-        # Query Cosmos DB for images only
-        result = cosmos_service.query_assets(
-            media_type="image",  # Images only
+        # Query images from Dataverse
+        result = dataverse_service.query_assets(
+            media_type="image",
             folder_path=folder_path,
             tags=tag_list,
             limit=limit,
             offset=offset,
-            order_by="created_at",
-            order_desc=True,
+            order_by="createdon",
+            order_desc=True
         )
 
-        gallery_items = []
-        for metadata in result["items"]:
-            # Extract technical metadata from custom_metadata if available
-            custom_meta = metadata.get("custom_metadata", {})
-
-            gallery_items.append(
-                GalleryItem(
-                    id=metadata["id"],
-                    name=metadata["blob_name"],
-                    media_type=MediaType.IMAGE,
-                    url=metadata["url"],
-                    container=metadata["container"],
-                    size=metadata["size"],
-                    content_type=metadata.get("content_type"),
-                    creation_time=metadata["created_at"],
-                    last_modified=metadata["updated_at"],
-                    metadata={
-                        # Core generation metadata from CosmosDB (only include meaningful values)
-                        **{k: v for k, v in {
-                            "prompt": metadata.get("prompt"),
-                            "model": metadata.get("model"),
-                            "description": metadata.get("description"),
-                            "quality": metadata.get("quality"),
-                            "background": metadata.get("background"),
-                            "output_format": metadata.get("output_format"),
-                            "has_transparency": metadata.get("has_transparency"),
-                            "generation_id": metadata.get("generation_id"),
-                        }.items() if v is not None and v != "" and v != "auto"},
-
-                        # Technical metadata (ensure integers, only include if valid)
-                        **{k: v for k, v in {
-                            "width": custom_meta.get("width") or metadata.get("width"),
-                            "height": custom_meta.get("height") or metadata.get("height"),
-                            "created_at": metadata.get("created_at"),
-                        }.items() if v is not None},
-
-                        # Analysis structure (nested only - no legacy support)
-                        **({"analysis": metadata.get("analysis")} if metadata.get("analysis") else {}),
-                        "has_analysis": metadata.get("has_analysis", False),
-
-                        # Additional custom fields (exclude None values and reserved keys)
-                        **{k: v for k, v in custom_meta.items()
-                           if k not in ["width", "height", "prompt", "description", "analysis"]
-                           and v is not None and v != ""}
-                    },
-                    folder_path=metadata.get("folder_path", ""),
-                )
-            )
+        items = []
+        for metadata in result.get("items", []):
+            try:
+                item = _build_gallery_item(metadata)
+                if item.media_type != MediaType.IMAGE:
+                    continue
+                items.append(item)
+            except Exception as exc:
+                logger.warning(f"Skipping gallery item due to invalid metadata: {exc}")
 
         return GalleryResponse(
-            success=True,
-            message=f"Retrieved {len(gallery_items)} images from metadata service",
-            total=result["total"],
+            items=items,
+            total=result.get("total", len(items)),
             limit=limit,
             offset=offset,
-            items=gallery_items,
             continuation_token=None,
-            folders=None,
+            has_more=result.get("has_more", False),
         )
+
+    except DataverseError as e:
+        logger.error(f"Dataverse error: {type(e).__name__}: {e}", exc_info=True)
+        raise HTTPException(status_code=503, detail=f"Dataverse service error: {str(e)}")
     except Exception as e:
-        logger.error(f"Error retrieving images from metadata: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to retrieve images from metadata service: {str(e)}",
-        )
+        logger.error(f"Error retrieving images: {type(e).__name__}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve images: {str(e)}")
 
 
 @router.get("/videos", response_model=GalleryResponse)
 async def get_gallery_videos(
-    limit: int = Query(
-        50, description="Maximum number of items to return", ge=1, le=100
-    ),
-    offset: int = Query(0, description="Offset for pagination"),
-    folder_path: Optional[str] = Query(
-        None, description="Optional folder path to filter assets"
-    ),
-    tags: Optional[str] = Query(
-        None, description="Comma-separated tags to filter by"),
-    cosmos_service: CosmosDBService = Depends(get_cosmos_service),
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0),
+    folder_path: Optional[str] = Query(None),
+    dataverse_service: DataverseService = Depends(get_dataverse_service),
 ):
-    """Get gallery videos from Cosmos DB metadata ONLY"""
+    """Get gallery videos from Dataverse"""
     try:
-        # Parse tags if provided
-        tag_list = None
-        if tags:
-            tag_list = [tag.strip() for tag in tags.split(",") if tag.strip()]
-
-        # Query Cosmos DB for videos only
-        result = cosmos_service.query_assets(
-            media_type="video",  # Videos only
+        result = dataverse_service.query_assets(
+            media_type="video",
             folder_path=folder_path,
-            tags=tag_list,
             limit=limit,
             offset=offset,
-            order_by="created_at",
-            order_desc=True,
+            order_by="createdon",
+            order_desc=True
         )
 
-        gallery_items = []
-        for metadata in result["items"]:
-            # Extract technical metadata from custom_metadata if available
-            custom_meta = metadata.get("custom_metadata", {})
-
-            gallery_items.append(
-                GalleryItem(
-                    id=metadata["id"],
-                    name=metadata["blob_name"],
-                    media_type=MediaType.VIDEO,
-                    url=metadata["url"],
-                    container=metadata["container"],
-                    size=metadata["size"],
-                    content_type=metadata.get("content_type"),
-                    creation_time=metadata["created_at"],
-                    last_modified=metadata["updated_at"],
-                    metadata={
-                        # Core generation metadata from CosmosDB (only include meaningful values)
-                        **{k: v for k, v in {
-                            "prompt": metadata.get("prompt"),
-                            "model": metadata.get("model"),
-                            "description": metadata.get("description"),
-                            "quality": metadata.get("quality"),
-                            "background": metadata.get("background"),
-                            "output_format": metadata.get("output_format"),
-                            "generation_id": metadata.get("generation_id"),
-                        }.items() if v is not None and v != "" and v != "auto"},
-
-                        # Video-specific metadata (only include if not None)
-                        **{k: v for k, v in {
-                            "duration": metadata.get("duration"),
-                            "resolution": metadata.get("resolution"),
-                            "fps": metadata.get("fps"),
-                        }.items() if v is not None},
-
-                        # Technical metadata (ensure integers, only include if valid)
-                        **{k: v for k, v in {
-                            "width": custom_meta.get("width") or metadata.get("width"),
-                            "height": custom_meta.get("height") or metadata.get("height"),
-                            "created_at": metadata.get("created_at"),
-                        }.items() if v is not None},
-
-                        # Analysis structure (nested only - no legacy support)
-                        **({"analysis": metadata.get("analysis")} if metadata.get("analysis") else {}),
-                        "has_analysis": metadata.get("has_analysis", False),
-
-                        # Additional custom fields (exclude None values and reserved keys)
-                        **{k: v for k, v in custom_meta.items()
-                           if k not in ["width", "height", "prompt", "description", "analysis", "duration", "fps", "resolution"]
-                           and v is not None and v != ""}
-                    },
-                    folder_path=metadata.get("folder_path", ""),
-                )
-            )
+        items = []
+        for metadata in result.get("items", []):
+            try:
+                item = _build_gallery_item(metadata)
+                if item.media_type != MediaType.VIDEO:
+                    continue
+                items.append(item)
+            except Exception as exc:
+                logger.warning(f"Skipping gallery item due to invalid metadata: {exc}")
 
         return GalleryResponse(
-            success=True,
-            message=f"Retrieved {len(gallery_items)} videos from metadata service",
-            total=result["total"],
+            items=items,
+            total=result.get("total", len(items)),
             limit=limit,
             offset=offset,
-            items=gallery_items,
             continuation_token=None,
-            folders=None,
+            has_more=result.get("has_more", False),
         )
+
+    except DataverseError as e:
+        logger.error(f"Dataverse error: {e}")
+        raise HTTPException(status_code=503, detail="Dataverse service error")
     except Exception as e:
-        import logging
-
-        logger = logging.getLogger(__name__)
-        logger.error(f"Error retrieving videos from metadata: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to retrieve videos from metadata service: {str(e)}",
-        )
+        logger.error(f"Error retrieving videos: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve videos")
 
 
-@router.get("/", response_model=GalleryResponse)
-async def get_gallery_items(
-    limit: int = Query(
-        50, description="Maximum number of items to return", ge=1, le=100
-    ),
-    offset: int = Query(0, description="Offset for pagination"),
-    folder_path: Optional[str] = Query(
-        None, description="Optional folder path to filter assets"
-    ),
-    cosmos_service: Optional[CosmosDBService] = Depends(get_cosmos_service),
+@router.get("/assets/{asset_id}/content")
+async def get_asset_content(
+    asset_id: str,
+    size: Optional[str] = Query(None, description="Optional size: thumbnail, medium, full"),
+    dataverse_service: DataverseService = Depends(get_dataverse_service),
 ):
-    """
-    Get all gallery items (images and videos) from CosmosDB metadata
-    """
+    """Get asset content directly from Dataverse"""
     try:
-        # Check if Cosmos DB service is available
-        if not cosmos_service:
-            logger.error("Cosmos DB service is not available")
-            raise HTTPException(
-                status_code=503,
-                detail="Cosmos DB service is not available. Please check your configuration.",
-            )
+        # Get asset metadata including image data
+        asset_metadata = dataverse_service.get_asset_metadata(asset_id)
+        if not asset_metadata:
+            raise HTTPException(status_code=404, detail="Asset not found")
 
-        return await _get_gallery_items_from_cosmos(
-            limit=limit,
-            offset=offset,
-            folder_path=folder_path,
-            cosmos_service=cosmos_service,
+        # If asset uses local fallback storage, serve the local file
+        container = asset_metadata.get("container")
+        url = asset_metadata.get("url") or ""
+        if container == "local" or (isinstance(url, str) and url.startswith(f"/{settings.IMAGE_DIR.rstrip('/')}")):
+            # Resolve local file path
+            # url is like /static/images/<filename>
+            try:
+                local_path = url.lstrip("/")
+                # Ensure path is inside configured image dir
+                base_dir = os.path.abspath(settings.IMAGE_DIR)
+                candidate = os.path.abspath(local_path)
+                if not candidate.startswith(base_dir):
+                    logger.error(f"Attempt to access file outside image dir: {candidate}")
+                    raise HTTPException(status_code=404, detail="Asset content not found")
+                with open(candidate, "rb") as f:
+                    image_bytes = f.read()
+                content_type = asset_metadata.get("content_type", "image/png")
+                return Response(
+                    content=image_bytes,
+                    media_type=content_type,
+                    headers={
+                        "Cache-Control": "public, max-age=3600",
+                        "Content-Length": str(len(image_bytes))
+                    }
+                )
+            except FileNotFoundError:
+                raise HTTPException(status_code=404, detail="Asset content not found")
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Failed to serve local asset file: {e}")
+                raise HTTPException(status_code=500, detail="Failed to retrieve asset content")
+
+        image_bytes: Optional[bytes] = None
+        content_type = asset_metadata.get("content_type", "image/png")
+
+        if container == "dataverse":
+            try:
+                file_bytes, file_content_type, _ = dataverse_service.download_asset_file(asset_id)
+                if file_bytes:
+                    image_bytes = file_bytes
+                    if file_content_type:
+                        content_type = file_content_type
+            except DataverseRecordNotFoundError:
+                logger.warning(f"No file attachment found for asset {asset_id}; checking inline data")
+            except DataverseError as e:
+                logger.error(f"Failed to download file for asset {asset_id}: {e}")
+                raise HTTPException(status_code=503, detail="Dataverse service error")
+
+        if image_bytes is None:
+            image_data_b64 = asset_metadata.get("image_data")
+            if not image_data_b64:
+                raise HTTPException(status_code=404, detail="Asset content not found")
+            try:
+                image_bytes = base64.b64decode(image_data_b64)
+            except Exception as e:
+                logger.error(f"Failed to decode image data for asset {asset_id}: {e}")
+                raise HTTPException(status_code=500, detail="Failed to decode asset content")
+
+        # Process size if requested
+        if size == "thumbnail":
+            try:
+                with Image.open(io.BytesIO(image_bytes)) as img:
+                    img.thumbnail((200, 200), Image.Resampling.LANCZOS)
+                    output = io.BytesIO()
+                    img_format = img.format if img.format else "PNG"
+                    img.save(output, format=img_format)
+                    image_bytes = output.getvalue()
+            except Exception as e:
+                logger.warning(f"Failed to create thumbnail for {asset_id}: {e}")
+                # Return original if thumbnail creation fails
+
+        elif size == "medium":
+            try:
+                with Image.open(io.BytesIO(image_bytes)) as img:
+                    img.thumbnail((800, 600), Image.Resampling.LANCZOS)
+                    output = io.BytesIO()
+                    img_format = img.format if img.format else "PNG"
+                    img.save(output, format=img_format)
+                    image_bytes = output.getvalue()
+            except Exception as e:
+                logger.warning(f"Failed to create medium size for {asset_id}: {e}")
+
+        # Determine content type
+        return Response(
+            content=image_bytes,
+            media_type=content_type,
+            headers={
+                "Cache-Control": "public, max-age=3600",
+                "Content-Length": str(len(image_bytes))
+            }
         )
+
     except HTTPException:
         raise
+    except DataverseError as e:
+        logger.error(f"Dataverse error getting asset content: {e}")
+        raise HTTPException(status_code=503, detail="Dataverse service error")
     except Exception as e:
-        logger.error(f"Error retrieving gallery items from CosmosDB: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-async def _get_gallery_items_from_cosmos(
-    limit: int, offset: int, folder_path: Optional[str], cosmos_service: CosmosDBService
-) -> GalleryResponse:
-    """Get gallery items from CosmosDB metadata with standardized analysis structure"""
-    try:
-        result = cosmos_service.query_assets(
-            folder_path=folder_path,
-            limit=limit,
-            offset=offset,
-            order_by="created_at",
-            order_desc=True,
-        )
-
-        gallery_items = []
-        for metadata in result["items"]:
-            # Extract technical metadata from custom_metadata if available
-            custom_meta = metadata.get("custom_metadata", {})
-
-            # Convert CosmosDB metadata to GalleryItem (CosmosDB is single source of truth)
-            gallery_items.append(
-                GalleryItem(
-                    id=metadata["id"],
-                    name=metadata["blob_name"],
-                    media_type=MediaType(metadata["media_type"]),
-                    url=metadata["url"],
-                    container=metadata["container"],
-                    size=metadata["size"],
-                    content_type=metadata.get("content_type"),
-                    creation_time=metadata["created_at"],
-                    last_modified=metadata["updated_at"],
-                    metadata={
-                        # Core generation metadata from CosmosDB (only meaningful values)
-                        **{k: v for k, v in {
-                            "prompt": metadata.get("prompt"),
-                            "model": metadata.get("model"),
-                            "description": metadata.get("description"),
-                            "quality": metadata.get("quality"),
-                            "background": metadata.get("background"),
-                            "output_format": metadata.get("output_format"),
-                            "has_transparency": metadata.get("has_transparency"),
-                            "generation_id": metadata.get("generation_id"),
-                        }.items() if v is not None and v != "" and v != "auto"},
-
-                        # Technical metadata (ensure proper types)
-                        **{k: v for k, v in {
-                            "width": custom_meta.get("width") or metadata.get("width"),
-                            "height": custom_meta.get("height") or metadata.get("height"),
-                            "created_at": metadata.get("created_at"),
-                        }.items() if v is not None},
-
-                        # Video-specific metadata
-                        **{k: v for k, v in {
-                            "duration": metadata.get("duration"),
-                            "fps": metadata.get("fps"),
-                            "resolution": metadata.get("resolution"),
-                        }.items() if v is not None},
-
-                        # Analysis structure (nested only)
-                        **({"analysis": metadata.get("analysis")} if metadata.get("analysis") else {}),
-                        "has_analysis": metadata.get("has_analysis", False),
-
-                        # Additional custom fields (exclude reserved keys and None values)
-                        **{k: v for k, v in custom_meta.items()
-                           if k not in ["width", "height", "prompt", "description", "analysis", "duration", "fps", "resolution"]
-                           and v is not None and v != ""}
-                    },
-                    folder_path=metadata.get("folder_path", ""),
-                )
-            )
-
-        return GalleryResponse(
-            success=True,
-            message="Gallery items retrieved successfully from metadata",
-            total=result["total"],
-            limit=limit,
-            offset=offset,
-            items=gallery_items,
-            continuation_token=None,  # Cosmos DB uses offset-based pagination
-            folders=None,
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Error querying metadata: {str(e)}"
-        )
-
-
-# Removed legacy blob storage implementation - now using CosmosDB only
+        logger.error(f"Error getting asset content: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve asset content")
 
 
 @router.post("/upload", response_model=AssetUploadResponse)
 async def upload_asset(
     file: UploadFile = File(...),
-    media_type: MediaType = Form(MediaType.IMAGE),
-    metadata: Optional[str] = Form(None),
+    media_type: MediaType = Form(...),
     folder_path: Optional[str] = Form(None),
-    azure_storage_service: AzureBlobStorageService = Depends(
-        lambda: AzureBlobStorageService()
-    ),
-    cosmos_service: Optional[CosmosDBService] = Depends(get_cosmos_service),
+    dataverse_service: DataverseService = Depends(get_dataverse_service),
 ):
-    """
-    Upload an asset (image or video) to Azure Blob Storage with optional metadata
-    Also creates metadata record in Cosmos DB if available
-    """
+    """Upload an asset directly to Dataverse"""
     try:
-        # Validate file type
+        # Read file content
+        file_content = await file.read()
+
+        # Get file info
+        file_size = len(file_content)
+        content_type = file.content_type or "application/octet-stream"
+        
+        # Get dimensions for images
+        width, height = None, None
         if media_type == MediaType.IMAGE:
-            valid_types = [".jpg", ".jpeg", ".png",
-                           ".gif", ".webp", ".svg", ".bmp"]
-        else:  # VIDEO
-            valid_types = [".mp4", ".mov", ".avi", ".wmv", ".webm", ".mkv"]
+            try:
+                with Image.open(io.BytesIO(file_content)) as img:
+                    width, height = img.size
+            except Exception as e:
+                logger.warning(f"Failed to get image dimensions: {e}")
 
-        filename = file.filename.lower()
-        if not any(filename.endswith(ext) for ext in valid_types):
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid file type. Must be one of {', '.join(valid_types)}",
+        # Create metadata for Dataverse
+        metadata = {
+            "media_type": media_type.value,
+            "blob_name": file.filename,  # For compatibility
+            "container": "dataverse",
+            "filename": file.filename,
+            "size": file_size,
+            "content_type": content_type,
+            "folder_path": folder_path,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        
+        if width and height:
+            metadata.update({"width": width, "height": height})
+
+        # Store in Dataverse
+        try:
+            metadata_record = dataverse_service.create_asset_metadata(metadata)
+        except DataverseError as e:
+            logger.error(f"Dataverse error creating asset metadata: {e}")
+            raise HTTPException(status_code=503, detail="Dataverse service error")
+
+        asset_id = metadata_record.get("id")
+        if not asset_id:
+            raise HTTPException(status_code=500, detail="Dataverse did not return an asset identifier")
+
+        try:
+            dataverse_service.upload_asset_file(
+                asset_id,
+                file_content,
+                filename=file.filename,
+                content_type=content_type,
             )
-
-        # Parse metadata if provided
-        metadata_dict = None
-        if metadata:
             try:
-                import json
+                dataverse_service.update_asset_metadata(asset_id, {"url": f"dataverse://{asset_id}"})
+            except DataverseError as update_exc:
+                logger.debug(f"Failed to update asset {asset_id} URL metadata: {update_exc}")
+        except DataverseError as e:
+            msg = str(e)
+            logger.warning(f"Dataverse error uploading file content: {msg}. Falling back to local file storage.")
 
-                metadata_dict = json.loads(metadata)
+            image_dir = os.path.abspath(settings.IMAGE_DIR)
+            os.makedirs(image_dir, exist_ok=True)
 
-                # Ensure all metadata values are UTF-8 compatible strings
-                if metadata_dict:
-                    for key, value in list(metadata_dict.items()):
-                        if value is None:
-                            del metadata_dict[key]
-                        elif isinstance(value, (dict, list)):
-                            metadata_dict[key] = json.dumps(value)
-            except json.JSONDecodeError:
-                raise HTTPException(
-                    status_code=400, detail="Invalid JSON format for metadata"
-                )
+            _, ext = os.path.splitext(file.filename or "")
+            ext = ext or ".png"
+            local_filename = f"{asset_id}{ext}"
+            local_path = os.path.join(image_dir, local_filename)
 
-        # Upload to Azure Blob Storage (no metadata stored in blob)
-        result = await azure_storage_service.upload_asset(
-            file, media_type.value, metadata=None, folder_path=folder_path
-        )
-
-        # Create metadata record in Cosmos DB if available
-        if cosmos_service:
             try:
-                # Prepare metadata for Cosmos DB
-                # Derive stable asset_id from blob name (filename without folder/extension)
-                asset_id = result["blob_name"].split(".")[0].split("/")[-1]
-                cosmos_data = {
-                    "id": asset_id,
-                    "media_type": media_type.value,
-                    "blob_name": result["blob_name"],
-                    "container": result["container"],
-                    "url": result["url"],
-                    "filename": result["original_filename"],
-                    "size": result["size"],
-                    "content_type": result["content_type"],
-                    "folder_path": result["folder_path"],
-                }
+                with open(local_path, "wb") as f:
+                    f.write(file_content)
+            except Exception as write_exc:
+                logger.error(f"Failed to write fallback file to {local_path}: {write_exc}")
+                raise HTTPException(status_code=500, detail="Failed to store asset")
 
-                # Add dimensions if available from upload result
-                if "width" in result:
-                    cosmos_data["width"] = result["width"]
-                if "height" in result:
-                    cosmos_data["height"] = result["height"]
-
-                # Add custom metadata
-                if metadata_dict:
-                    cosmos_data["custom_metadata"] = metadata_dict
-
-                cosmos_metadata = AssetMetadataCreateRequest(**cosmos_data)
-
-                cosmos_service.create_asset_metadata(
-                    cosmos_metadata.dict(exclude_unset=True)
+            try:
+                dataverse_service.update_asset_metadata(
+                    asset_id,
+                    {
+                        "container": "local",
+                        "url": f"/{settings.IMAGE_DIR.rstrip('/')}/{local_filename}",
+                        "blob_name": local_filename,
+                    },
                 )
-            except Exception as cosmos_error:
-                # Log error but don't fail the upload
-                import logging
+            except DataverseError as update_exc:
+                logger.debug(f"Failed to update fallback metadata for asset {asset_id}: {update_exc}")
 
-                logger = logging.getLogger(__name__)
-                logger.warning(
-                    f"Failed to create Cosmos DB metadata: {cosmos_error}")
+            return AssetUploadResponse(
+                success=True,
+                message="Asset uploaded with local fallback storage",
+                asset_id=asset_id,
+                url=f"/{settings.IMAGE_DIR.rstrip('/')}/{local_filename}",
+                size=file_size,
+            )
 
         return AssetUploadResponse(
             success=True,
-            message=f"{media_type.value.capitalize()} uploaded successfully",
-            **result,
+            message="Asset uploaded successfully",
+            asset_id=asset_id,
+            url=f"/api/v1/gallery/assets/{asset_id}/content",
+            size=file_size,
         )
+
+    except DataverseError as e:
+        logger.error(f"Dataverse error uploading asset: {e}")
+        raise HTTPException(status_code=503, detail="Dataverse service error")
     except Exception as e:
-        import traceback
-
-        error_detail = str(e)
-        error_trace = traceback.format_exc()
-        print(f"Upload error: {error_detail}")
-        print(f"Error trace: {error_trace}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error uploading asset: {e}")
+        raise HTTPException(status_code=500, detail="Failed to upload asset")
 
 
-@router.delete("/delete", response_model=AssetDeleteResponse)
+@router.delete("/assets/{asset_id}", response_model=AssetDeleteResponse)
 async def delete_asset(
-    blob_name: str = Query(..., description="Name of the blob to delete"),
-    media_type: MediaType = Query(
-        None, description="Type of media (image or video) to determine container"
-    ),
-    container: Optional[str] = Query(
-        None,
-        description="Container name (images or videos) - overrides media_type if provided",
-    ),
-    azure_storage_service: AzureBlobStorageService = Depends(
-        lambda: AzureBlobStorageService()
-    ),
-    cosmos_service: Optional[CosmosDBService] = Depends(get_cosmos_service),
+    asset_id: str,
+    dataverse_service: DataverseService = Depends(get_dataverse_service),
 ):
-    """
-    Delete an asset from Azure Blob Storage and Cosmos DB metadata
-    """
+    """Delete an asset from Dataverse"""
     try:
-        # Determine container name
-        container_name = container
-        if not container_name:
-            if not media_type:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Either media_type or container must be specified",
-                )
-            container_name = (
-                settings.AZURE_BLOB_IMAGE_CONTAINER
-                if media_type == MediaType.IMAGE
-                else settings.AZURE_BLOB_VIDEO_CONTAINER
+        metadata = dataverse_service.get_asset_metadata(asset_id)
+        blob_name = metadata.get("blob_name") if metadata else None
+        container = metadata.get("container") if metadata else None
+
+        success = dataverse_service.delete_asset_metadata(asset_id)
+
+        if success:
+            logger.info(f"Successfully deleted asset {asset_id}")
+            return AssetDeleteResponse(
+                success=True,
+                message="Asset deleted successfully",
+                blob_name=blob_name,
+                container=container
             )
-
-        # Extract asset ID for Cosmos DB deletion
-        asset_id = blob_name.split(".")[0].split("/")[-1]
-        media_type_str = (
-            "image"
-            if container_name == settings.AZURE_BLOB_IMAGE_CONTAINER
-            else "video"
-        )
-
-        # Delete from Cosmos DB first (if available)
-        if cosmos_service:
-            try:
-                cosmos_service.delete_asset_metadata(asset_id, media_type_str)
-            except Exception as cosmos_error:
-                import logging
-
-                logger = logging.getLogger(__name__)
-                logger.warning(
-                    f"Failed to delete Cosmos DB metadata: {cosmos_error}")
-
-        # Delete from Azure Blob Storage
-        success = azure_storage_service.delete_asset(blob_name, container_name)
-
-        if not success:
+        else:
             raise HTTPException(status_code=404, detail="Asset not found")
 
-        return AssetDeleteResponse(
-            success=True,
-            message="Asset deleted successfully",
-            blob_name=blob_name,
-            container=container_name,
-        )
-    except HTTPException:
-        raise
+    except DataverseError as e:
+        logger.error(f"Dataverse error deleting asset: {e}")
+        raise HTTPException(status_code=503, detail="Dataverse service error")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error deleting asset: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete asset")
 
 
-# Include all other existing endpoints with similar Cosmos DB integration...
-# For brevity, I'm showing the pattern for the main endpoints.
-# The remaining endpoints would follow the same pattern of:
-# 1. Try Cosmos DB operation if available
-# 2. Fall back to blob storage
-# 3. Log warnings for Cosmos DB failures but don't fail the operation
-
-
-@router.get("/asset/{media_type}/{blob_name:path}")
-async def get_asset_content(
-    media_type: MediaType,
-    blob_name: str,
-    azure_storage_service: AzureBlobStorageService = Depends(
-        lambda: AzureBlobStorageService()
-    ),
+@router.get("/search")
+async def search_assets(
+    query: str = Query(..., description="Search query"),
+    media_type: Optional[str] = Query(None, description="Filter by media type"),
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0),
+    dataverse_service: DataverseService = Depends(get_dataverse_service),
 ):
-    """Stream asset content directly from Azure Blob Storage"""
+    """Search assets in Dataverse"""
     try:
-        container_name = (
-            settings.AZURE_BLOB_IMAGE_CONTAINER
-            if media_type == MediaType.IMAGE
-            else settings.AZURE_BLOB_VIDEO_CONTAINER
-        )
-        content, content_type = azure_storage_service.get_asset_content(
-            blob_name, container_name
+        result = dataverse_service.search_assets(
+            search_term=query,
+            media_type=media_type,
+            limit=limit,
+            offset=offset
         )
 
-        if not content:
-            raise HTTPException(
-                status_code=404, detail=f"Asset not found: {blob_name}")
+        items = []
+        for metadata in result.get("items", []):
+            try:
+                items.append(_build_gallery_item(metadata))
+            except Exception as exc:
+                logger.warning(f"Skipping gallery item due to invalid metadata: {exc}")
 
-        filename = blob_name.split("/")[-1] if "/" in blob_name else blob_name
-
-        return StreamingResponse(
-            content=io.BytesIO(content),
-            media_type=content_type,
-            headers={"Content-Disposition": f"inline; filename={filename}"},
+        return GalleryResponse(
+            items=items,
+            total=result.get("total", len(items)),
+            limit=limit,
+            offset=offset,
+            continuation_token=None,
+            has_more=result.get("has_more", False),
         )
+
+    except DataverseError as e:
+        logger.error(f"Dataverse error searching assets: {e}")
+        raise HTTPException(status_code=503, detail="Dataverse service error")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error searching assets: {e}")
+        raise HTTPException(status_code=500, detail="Failed to search assets")
 
 
-@router.get("/sas-tokens", response_model=SasTokenResponse)
-async def get_sas_tokens():
-    """Generate and return SAS tokens for frontend direct access to blob storage"""
+@router.get("/folders")
+async def get_folders(
+    media_type: Optional[str] = Query(None, description="Filter by media type (image or video)"),
+    dataverse_service: DataverseService = Depends(get_dataverse_service),
+):
+    """Get all folders from Dataverse"""
     try:
-        video_token = generate_container_sas(
-            account_name=settings.AZURE_STORAGE_ACCOUNT_NAME,
-            container_name=settings.AZURE_BLOB_VIDEO_CONTAINER,
-            account_key=settings.AZURE_STORAGE_ACCOUNT_KEY,
-            permission=ContainerSasPermissions(read=True),
-            expiry=datetime.now(timezone.utc) + timedelta(hours=1),
-        )
-
-        image_token = generate_container_sas(
-            account_name=settings.AZURE_STORAGE_ACCOUNT_NAME,
-            container_name=settings.AZURE_BLOB_IMAGE_CONTAINER,
-            account_key=settings.AZURE_STORAGE_ACCOUNT_KEY,
-            permission=ContainerSasPermissions(read=True),
-            expiry=datetime.now(timezone.utc) + timedelta(hours=1),
-        )
-
-        expiry_time = datetime.now(timezone.utc) + timedelta(hours=1)
+        result = dataverse_service.get_all_folders(media_type=media_type)
         return {
-            "success": True,
-            "message": "SAS tokens generated successfully",
-            "video_sas_token": video_token,
-            "image_sas_token": image_token,
-            "video_container_url": f"https://{settings.AZURE_STORAGE_ACCOUNT_NAME}.blob.core.windows.net/{settings.AZURE_BLOB_VIDEO_CONTAINER}",
-            "image_container_url": f"https://{settings.AZURE_STORAGE_ACCOUNT_NAME}.blob.core.windows.net/{settings.AZURE_BLOB_IMAGE_CONTAINER}",
-            "expiry": expiry_time,
+            "folders": result["folders"],
+            "total": result["total_folders"]
         }
+
+    except DataverseError as e:
+        logger.error(f"Dataverse error getting folders: {type(e).__name__}: {e}", exc_info=True)
+        raise HTTPException(status_code=503, detail=f"Dataverse service error: {str(e)}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error getting folders: {type(e).__name__}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve folders: {str(e)}")
 
 
-@router.get("/health", response_model=Dict[str, Any])
-async def health_check(
-    cosmos_service: Optional[CosmosDBService] = Depends(get_cosmos_service),
-    azure_storage_service: AzureBlobStorageService = Depends(
-        lambda: AzureBlobStorageService()
-    ),
+@router.get("/health")
+async def gallery_health_check(
+    dataverse_service: DataverseService = Depends(get_dataverse_service),
 ):
-    """
-    Health check endpoint to verify all services are working
-    """
-    health_status = {
-        "timestamp": datetime.utcnow().isoformat(),
-        "services": {},
-        "overall_status": "healthy",
-    }
-
-    # Check Azure Blob Storage
+    """Health check for gallery service"""
     try:
-        # Try to list containers to test connectivity
-        containers = [
-            settings.AZURE_BLOB_IMAGE_CONTAINER,
-            settings.AZURE_BLOB_VIDEO_CONTAINER,
-        ]
-        for container in containers:
-            azure_storage_service._ensure_container_exists(container)
-
-        health_status["services"]["azure_blob_storage"] = {
+        health_status = {
             "status": "healthy",
-            "message": "Successfully connected to Azure Blob Storage",
-            "containers": containers,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "services": {}
         }
-    except Exception as e:
-        health_status["services"]["azure_blob_storage"] = {
-            "status": "unhealthy",
-            "error": str(e),
-        }
-        health_status["overall_status"] = "degraded"
 
-    # Check Cosmos DB
-    if cosmos_service:
+        # Check Dataverse
         try:
-            cosmos_health = cosmos_service.health_check()
-            health_status["services"]["cosmos_db"] = cosmos_health
-
-            if cosmos_health["status"] != "healthy":
-                health_status["overall_status"] = "degraded"
-
+            dataverse_health = dataverse_service.health_check()
+            health_status["services"]["dataverse"] = dataverse_health
+            
+            if dataverse_health["status"] != "healthy":
+                health_status["status"] = "degraded"
+                
         except Exception as e:
-            health_status["services"]["cosmos_db"] = {
+            health_status["services"]["dataverse"] = {
                 "status": "unhealthy",
                 "error": str(e),
-                "message": "Cosmos DB metadata service unavailable - falling back to blob storage",
+                "message": "Dataverse service unavailable",
             }
-            health_status["overall_status"] = "degraded"
-    else:
-        health_status["services"]["cosmos_db"] = {
-            "status": "unavailable",
-            "message": "Cosmos DB not configured - using blob storage only",
-        }
-        health_status["overall_status"] = "degraded"
+            health_status["status"] = "unhealthy"
 
-    # Check AI Services
-    try:
-        # Test if AI clients are properly initialized
-        from backend.core import sora_client, dalle_client, llm_client
-
-        ai_services = {}
-        if sora_client:
-            ai_services["sora"] = "available"
-        if dalle_client:
-            ai_services["dalle/gpt_image"] = "available"
-        if llm_client:
-            ai_services["llm"] = "available"
-
-        health_status["services"]["ai_services"] = {
-            "status": "healthy" if ai_services else "unhealthy",
-            "available_services": ai_services,
-            "message": f"{len(ai_services)} AI services available",
-        }
+        return health_status
 
     except Exception as e:
-        health_status["services"]["ai_services"] = {
+        logger.error(f"Health check failed: {e}")
+        return {
             "status": "unhealthy",
-            "error": str(e),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "error": str(e)
         }
-        health_status["overall_status"] = "degraded"
-
-    return health_status
-
-
-@router.get("/metadata/status", response_model=Dict[str, Any])
-async def metadata_service_status(
-    cosmos_service: Optional[CosmosDBService] = Depends(get_cosmos_service),
-):
-    """
-    Detailed status of metadata service capabilities
-    """
-    status = {
-        "timestamp": datetime.utcnow().isoformat(),
-        "metadata_service": {},
-        "capabilities": {},
-    }
-
-    if cosmos_service:
-        try:
-            # Test basic connectivity
-            cosmos_health = cosmos_service.health_check()
-
-            # Test query capabilities
-            test_query_result = cosmos_service.query_assets(limit=1, offset=0)
-
-            # Test search capabilities
-            try:
-                search_result = cosmos_service.search_assets("test", limit=1)
-                search_available = True
-            except:
-                search_available = False
-
-            status["metadata_service"] = {
-                "status": "available",
-                "type": "cosmos_db",
-                "health": cosmos_health,
-                "total_assets": test_query_result.get("total", 0),
-                "performance_mode": "fast_metadata_queries",
-            }
-
-            status["capabilities"] = {
-                "fast_pagination": True,
-                "advanced_search": search_available,
-                "metadata_filtering": True,
-                "tag_based_search": True,
-                "folder_statistics": True,
-                "recent_assets": True,
-                "ai_metadata_enrichment": True,
-            }
-
-        except Exception as e:
-            status["metadata_service"] = {
-                "status": "error",
-                "type": "cosmos_db",
-                "error": str(e),
-                "performance_mode": "fallback_to_blob_storage",
-            }
-
-            status["capabilities"] = {
-                "fast_pagination": False,
-                "advanced_search": False,
-                "metadata_filtering": False,
-                "tag_based_search": False,
-                "folder_statistics": False,
-                "recent_assets": False,
-                "ai_metadata_enrichment": False,
-            }
-    else:
-        status["metadata_service"] = {
-            "status": "unavailable",
-            "type": "cosmos_db_required",
-            "performance_mode": "service_unavailable",
-        }
-
-        status["capabilities"] = {
-            "fast_pagination": False,
-            "advanced_search": False,
-            "metadata_filtering": True,
-            "tag_based_search": False,
-            "folder_statistics": False,
-            "recent_assets": False,
-            "ai_metadata_enrichment": False,
-        }
-
-    return status
-
-
-@router.get("/folders", response_model=Dict[str, Any])
-async def list_folders(
-    media_type: Optional[MediaType] = Query(
-        None, description="Filter folders by media type (image or video)"
-    ),
-    cosmos_service: Optional[CosmosDBService] = Depends(get_cosmos_service),
-):
-    """
-    List all folders from Cosmos DB metadata
-
-    This endpoint returns all unique folder paths from assets stored in Cosmos DB.
-    """
-    try:
-        # Check if Cosmos DB service is available
-        if not cosmos_service:
-            logger.error("Cosmos DB service is not available")
-            raise HTTPException(
-                status_code=503,
-                detail="Cosmos DB service is not available. Please check your configuration.",
-            )
-
-        # Get folders from Cosmos DB
-        media_type_str = media_type.value if media_type else None
-        result = cosmos_service.get_all_folders(media_type=media_type_str)
-
-        # Filter out root folder from the results and build hierarchy for UI
-        filtered_folders = [folder for folder in result['folders'] if folder != '/' and folder.strip()]
-        
-        # Build folder hierarchy for UI
-        folder_hierarchy = {}
-        for folder_path in filtered_folders:
-            # For single-level folders, add directly to hierarchy
-            # Since we don't have metadata anymore, just mark as present
-            if '/' not in folder_path:
-                folder_hierarchy[folder_path] = {}
-
-        return {
-            "success": True,
-            "message": "Folders retrieved successfully from Cosmos DB",
-            "folders": filtered_folders,  # Filtered string array (no root)
-            "folder_hierarchy": folder_hierarchy,
-            "total_folders": len(filtered_folders),
-            "source": "cosmos_db"
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error retrieving folders from Cosmos DB: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/folders", response_model=Dict[str, Any])
-async def create_folder(
-    folder_path: str = Body(..., embed=True),
-    media_type: Optional[MediaType] = Body(None, embed=True),
-    cosmos_service: Optional[CosmosDBService] = Depends(get_cosmos_service),
-):
-    """
-    Create a folder placeholder in CosmosDB for immediate navbar visibility.
-    
-    This creates a special folder metadata record so the folder appears immediately
-    in the navigation, even before any assets are added to it.
-    """
-    try:
-        # Validate folder name
-        folder_path = folder_path.strip()
-        if not folder_path:
-            raise HTTPException(
-                status_code=400, detail="Folder path cannot be empty")
-
-        # Remove leading/trailing slashes for consistency
-        folder_path = folder_path.strip("/")
-
-        # Don't allow creating root folder
-        if folder_path == "":
-            raise HTTPException(
-                status_code=400, detail="Cannot create root folder")
-
-        # Basic validation - allow alphanumeric, hyphens, underscores, spaces
-        if not re.match(r"^[a-zA-Z0-9\-_ ]+$", folder_path):
-            raise HTTPException(
-                status_code=400,
-                detail="Folder path can only contain alphanumeric characters, hyphens, underscores, and spaces",
-            )
-
-        # Normalize folder path for storage
-        normalized_folder = folder_path.strip()
-        if normalized_folder and not normalized_folder.endswith("/"):
-            normalized_folder = f"{normalized_folder}/"
-
-        # Create folder placeholder in CosmosDB for immediate visibility
-        if cosmos_service:
-            try:
-                # Check if folder placeholder already exists
-                existing_placeholder = cosmos_service.container.query_items(
-                    query="SELECT * FROM c WHERE c.doc_type = 'folder_placeholder' AND c.folder_path = @folder_path",
-                    parameters=[{"name": "@folder_path", "value": normalized_folder}],
-                    enable_cross_partition_query=True
-                )
-                
-                if not list(existing_placeholder):
-                    # Create folder placeholder record
-                    folder_placeholder = {
-                        "id": f"folder_{uuid.uuid4().hex[:12]}",
-                        "doc_type": "folder_placeholder",
-                        "media_type": "folder_placeholder",  # Use as partition key
-                        "folder_path": normalized_folder,
-                        "folder_name": folder_path,  # Human readable name
-                        "target_media_type": media_type.value if media_type else "mixed",
-                        "created_at": datetime.utcnow().isoformat(),
-                        "is_placeholder": True,
-                        "asset_count": 0
-                    }
-                    
-                    cosmos_service.create_asset_metadata(folder_placeholder)
-                    logger.info(f"Created folder placeholder for: {folder_path}")
-                else:
-                    logger.info(f"Folder placeholder already exists for: {folder_path}")
-                    
-            except Exception as e:
-                logger.warning(f"Failed to create folder placeholder in CosmosDB: {e}")
-                # Continue anyway - folder will still work when assets are added
-
-        # Return success
-        return {
-            "success": True,
-            "message": f"Folder '{folder_path}' created and is immediately available.",
-            "folder_path": folder_path,
-            "media_type": media_type.value if media_type else "any",
-            "created": True,
-            "immediate_visibility": True
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error in create_folder: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))

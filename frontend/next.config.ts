@@ -6,11 +6,26 @@ const withBundleAnalyzer = require('@next/bundle-analyzer')({
   enabled: process.env.ANALYZE === 'true',
 });
 
-// const STORAGE_ACCOUNT_NAME = process.env.NEXT_PUBLIC_STORAGE_ACCOUNT_NAME;
+// Resolve flux provider from either build-time or already-prefixed env var
+const fluxProvider = (process.env.FLUX_MODEL_PROVIDER || process.env.NEXT_PUBLIC_FLUX_MODEL_PROVIDER || '').toLowerCase();
+const resolvedDefaultImageModel = process.env.DEFAULT_IMAGE_MODEL
+  || process.env.NEXT_PUBLIC_DEFAULT_IMAGE_MODEL
+  || ((fluxProvider === 'foundry' || fluxProvider === 'bfl') ? 'flux-pro' : 'gpt-image-1');
 
 const nextConfig: NextConfig = {
   /* config options here */
-  output: 'standalone',
+  // output: 'standalone', // Disabled for now to use 'next start' normally
+  env: {
+    // Public flags that can be consumed in the browser. Do NOT expose secrets like API keys here.
+    NEXT_PUBLIC_FLUX_MODEL_PROVIDER: fluxProvider || '',
+    NEXT_PUBLIC_DEFAULT_IMAGE_MODEL: resolvedDefaultImageModel,
+    // Foundry (Flux) endpoints - safe to expose if they are not accompanied by secrets
+    NEXT_PUBLIC_FOUNDRY_ENDPOINT: process.env.FOUNDRY_ENDPOINT || '',
+    NEXT_PUBLIC_FOUNDRY_FLUX_PRO_ENDPOINT: process.env.FOUNDRY_FLUX_PRO_ENDPOINT || '',
+    NEXT_PUBLIC_FOUNDRY_FLUX_KONTEXT_ENDPOINT: process.env.FOUNDRY_FLUX_KONTEXT_ENDPOINT || '',
+    NEXT_PUBLIC_FOUNDRY_DEPLOYMENT_FLUX_PRO: process.env.FOUNDRY_DEPLOYMENT_FLUX_PRO || '',
+    NEXT_PUBLIC_FOUNDRY_DEPLOYMENT_FLUX_KONTEXT: process.env.FOUNDRY_DEPLOYMENT_FLUX_KONTEXT || '',
+  },
   // Add allowedDevOrigins to prevent the CORS warning in development
   allowedDevOrigins: ['localhost', '127.0.0.1', '::1'],
   
@@ -20,13 +35,19 @@ const nextConfig: NextConfig = {
   // Optimize static generation
   trailingSlash: false,
   
-  // Image optimization configuration for Azure Blob Storage
+  // Image optimization configuration for Dataverse storage
   images: {
     remotePatterns: [
       {
+        protocol: 'http',
+        hostname: 'localhost',
+        port: '8000',
+        pathname: '/api/v1/gallery/assets/**',
+      },
+      {
         protocol: 'https',
-        hostname: '*.blob.core.windows.net',
-        pathname: '/**',
+        hostname: '*.azurewebsites.net',
+        pathname: '/api/v1/gallery/assets/**',
       }
     ],
     // Image optimization settings
@@ -34,7 +55,7 @@ const nextConfig: NextConfig = {
     formats: ['image/webp', 'image/avif'],
     deviceSizes: [640, 750, 828, 1080, 1200, 1920, 2048, 3840],
     imageSizes: [16, 32, 48, 64, 96, 128, 256, 384],
-    // Enable unoptimized images for external URLs with query params (SAS tokens)
+    // Enable unoptimized images for Dataverse served content
     unoptimized: false,
   },
   
@@ -60,7 +81,7 @@ const nextConfig: NextConfig = {
   eslint: {
     ignoreDuringBuilds: true,
   },
-  // Disable TypeScript checks during builds
+  // Disable TypeScript checks during builds temporarily
   typescript: {
     ignoreBuildErrors: true,
   },

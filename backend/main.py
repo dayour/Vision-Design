@@ -4,13 +4,11 @@ from fastapi.staticfiles import StaticFiles
 import os
 import logging
 import uvicorn
-from .core.config import settings
-from .api.endpoints import images, metadata_router, videos, gallery, env, flux, auth_status, dataverse
+from backend.core.config import settings
+from backend.api.endpoints import images, metadata_router, videos, gallery, env, flux, auth_status, dataverse
 
-# Configure logging to suppress Azure Blob Storage verbose logs
-logging.getLogger("azure.core.pipeline.policies.http_logging_policy").setLevel(
-    logging.WARNING
-)
+# Configure logging
+logging.getLogger("dataverse.client").setLevel(logging.WARNING)
 
 # Create directories if they don't exist
 os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
@@ -21,13 +19,14 @@ app = FastAPI(
     title=settings.PROJECT_NAME, openapi_url=f"{settings.API_V1_STR}/openapi.json"
 )
 
-# Set up CORS
+# Set up CORS - must be before mounting static files
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Update this with proper origins in production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 # Mount static files

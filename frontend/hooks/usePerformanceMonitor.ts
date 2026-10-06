@@ -88,7 +88,7 @@ export function usePerformanceMonitor() {
     assetMetricsRef.current = resourceEntries
       .filter(entry => 
         entry.name.includes('/_next/static/') ||
-        entry.name.includes('.blob.core.windows.net') ||
+        entry.name.includes('/api/v1/gallery/assets/') ||
         entry.name.includes('.jpg') ||
         entry.name.includes('.png') ||
         entry.name.includes('.webp') ||

@@ -49,18 +49,17 @@ class GalleryResponse(BaseResponse):
         None, description="Token for next page of results")
     folders: Optional[List[str]] = Field(
         None, description="List of folder paths in the current view")
+    has_more: bool = Field(False, description="Whether additional items are available")
 
 
 # Asset operation models
 class AssetUploadResponse(BaseResponse):
     """Response model for asset upload operations"""
-    file_id: str = Field(..., description="Unique ID of the uploaded asset")
-    blob_name: str = Field(..., description="Blob name in storage")
-    container: str = Field(..., description="Storage container name")
-    url: str = Field(..., description="URL to access the asset")
+    asset_id: str = Field(..., description="Unique ID of the uploaded asset")
+    url: str = Field(..., description="URL to access the asset content")
     size: int = Field(..., description="Size of the asset in bytes")
-    content_type: str = Field(..., description="Content type of the asset")
-    original_filename: str = Field(..., description="Original filename")
+    content_type: Optional[str] = Field(None, description="Content type of the asset")
+    filename: Optional[str] = Field(None, description="Original filename")
     metadata: Optional[Dict[str, Any]] = Field(
         None, description="Metadata associated with the asset")
     folder_path: Optional[str] = Field(
@@ -69,8 +68,12 @@ class AssetUploadResponse(BaseResponse):
 
 class AssetDeleteResponse(BaseResponse):
     """Response model for asset deletion operations"""
-    blob_name: str = Field(..., description="Name of the deleted blob")
-    container: str = Field(..., description="Container of the deleted blob")
+    blob_name: Optional[str] = Field(
+        None, description="Name of the deleted blob"
+    )
+    container: Optional[str] = Field(
+        None, description="Container of the deleted blob"
+    )
 
 
 class AssetUrlResponse(BaseResponse):

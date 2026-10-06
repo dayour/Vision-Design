@@ -1,5 +1,78 @@
 import { fetchGalleryVideos, GalleryItem, MediaType, fetchGalleryImages } from "@/services/api";
-import { sasTokenService } from "@/services/sas-token";
+
+// Helper function to safely parse analysis data
+const parseAnalysisData = (analysis: unknown) => {
+  if (typeof analysis === 'string') {
+    try {
+      return JSON.parse(analysis);
+    } catch {
+      return {};
+    }
+  }
+  return analysis || {};
+};
+
+// Helper function to normalize any value to a string
+const normalizeToString = (value: unknown): string => {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) {
+    return value
+      .map((entry) => {
+        if (typeof entry === 'string') return entry;
+        if (entry && typeof entry === 'object') {
+          const objectValues = Object.values(entry as Record<string, unknown>)
+            .filter((val) => typeof val === 'string' && val.trim().length > 0) as string[];
+          if (objectValues.length > 0) {
+            return objectValues.join(' ');
+          }
+        }
+        return entry != null ? String(entry) : '';
+      })
+      .filter((entry) => entry && entry.trim().length > 0)
+      .join(', ');
+  }
+  if (value && typeof value === 'object') {
+    const objectValues = Object.values(value as Record<string, unknown>)
+      .filter((val) => typeof val === 'string' && val.trim().length > 0) as string[];
+    if (objectValues.length > 0) {
+      return objectValues.join(', ');
+    }
+  }
+  return value != null ? String(value) : '';
+};
+
+// Helper function to normalize tags
+const normalizeTags = (value: unknown): string[] => {
+  if (Array.isArray(value)) {
+    return value
+      .map((tag) => {
+        if (typeof tag === 'string') {
+          return tag.trim();
+        }
+        if (tag && typeof tag === 'object') {
+          const possibleName =
+            (tag as Record<string, unknown>).name ??
+            (tag as Record<string, unknown>).label ??
+            (tag as Record<string, unknown>).title;
+          if (typeof possibleName === 'string') {
+            return possibleName.trim();
+          }
+          return normalizeToString(tag);
+        }
+        return '';
+      })
+      .filter((tag) => tag.length > 0);
+  }
+
+  if (typeof value === 'string') {
+    return value
+      .split(/[,;]+/)
+      .map((tag) => tag.trim())
+      .filter((tag) => tag.length > 0);
+  }
+
+  return [];
+};
 
 export interface VideoMetadata {
   src: string;
@@ -12,7 +85,7 @@ export interface VideoMetadata {
   originalItem: GalleryItem;
   width?: number;
   height?: number;
-  // Analysis metadata from Azure Blob Storage
+  // Analysis metadata from Dataverse
   analysis?: {
     summary?: string;
     products?: string;
@@ -32,20 +105,32 @@ async function mapGalleryItemToVideoMetadata(item: GalleryItem): Promise<VideoMe
   // Extract description from metadata
   const description = item.metadata?.description || '';
   
-  // Get direct URL with SAS token
-  const src = await sasTokenService.getBlobUrl(item.name, item.media_type === MediaType.VIDEO);
-  console.log(`Using direct blob URL for ${item.name}`);
+  // Use the new asset content endpoint instead of SAS token URLs
+  const src = `/api/v1/gallery/assets/${item.id}/content`;
+  console.log(`Using asset content endpoint for ${item.name}: ${src}`);
   
-  // Extract analysis metadata from CosmosDB nested structure
+  // Helper function to safely parse analysis data
+  const parseAnalysisData = (analysis: unknown) => {
+    if (typeof analysis === 'string') {
+      try {
+        return JSON.parse(analysis);
+      } catch {
+        return {};
+      }
+    }
+    return analysis || {};
+  };
+
+  // Extract analysis metadata from Dataverse nested structure
   let analysis: VideoMetadata['analysis'] = undefined;
   if (item.metadata?.analysis) {
-    const analysisData = item.metadata.analysis;
+    const analysisData = parseAnalysisData(item.metadata.analysis);
     analysis = {
-      summary: analysisData.summary as string,
-      products: analysisData.products as string,
-      feedback: analysisData.feedback as string,
-      tags: Array.isArray(analysisData.tags) ? analysisData.tags : [],
-      analyzed: item.metadata.has_analysis === true,
+      summary: normalizeToString(analysisData?.summary),
+      products: normalizeToString(analysisData?.products),
+      feedback: normalizeToString(analysisData?.feedback),
+      tags: normalizeTags(analysisData?.tags),
+      analyzed: (item.metadata.has_analysis === true) || (analysisData?.analyzed === true),
     };
   }
 
@@ -121,90 +206,32 @@ export async function fetchVideos(
  */
 async function mapGalleryItemToImageMetadata(item: GalleryItem): Promise<ImageMetadata> {
   try {
-    const normalizeToString = (value: unknown): string => {
-      if (typeof value === 'string') return value;
-      if (Array.isArray(value)) {
-        return value
-          .map((entry) => {
-            if (typeof entry === 'string') return entry;
-            if (entry && typeof entry === 'object') {
-              const objectValues = Object.values(entry as Record<string, unknown>)
-                .filter((val) => typeof val === 'string' && val.trim().length > 0) as string[];
-              if (objectValues.length > 0) {
-                return objectValues.join(' ');
-              }
-            }
-            return entry != null ? String(entry) : '';
-          })
-          .filter((entry) => entry && entry.trim().length > 0)
-          .join(', ');
-      }
-      if (value && typeof value === 'object') {
-        const objectValues = Object.values(value as Record<string, unknown>)
-          .filter((val) => typeof val === 'string' && val.trim().length > 0) as string[];
-        if (objectValues.length > 0) {
-          return objectValues.join(', ');
-        }
-      }
-      return value != null ? String(value) : '';
-    };
-
-    const normalizeTags = (value: unknown): string[] => {
-      if (Array.isArray(value)) {
-        return value
-          .map((tag) => {
-            if (typeof tag === 'string') {
-              return tag.trim();
-            }
-            if (tag && typeof tag === 'object') {
-              const possibleName =
-                (tag as Record<string, unknown>).name ??
-                (tag as Record<string, unknown>).label ??
-                (tag as Record<string, unknown>).title;
-              if (typeof possibleName === 'string') {
-                return possibleName.trim();
-              }
-              return normalizeToString(tag);
-            }
-            return '';
-          })
-          .filter((tag) => tag.length > 0);
-      }
-
-      if (typeof value === 'string') {
-        return value
-          .split(/[,;]+/)
-          .map((tag) => tag.trim())
-          .filter((tag) => tag.length > 0);
-      }
-
-      return [];
-    };
-
     // Extract title from prompt (preferred) or name
     const title = item.metadata?.prompt || item.name.split('.')[0].replace(/_/g, ' ');
 
-    // Extract description from CosmosDB metadata, falling back to prompt-derived text
-    const descriptionSource = item.metadata?.analysis?.summary ?? item.metadata?.description ?? '';
+    // Extract description from Dataverse metadata, falling back to prompt-derived text
+    const analysisForDescription = parseAnalysisData(item.metadata?.analysis);
+    const descriptionSource = analysisForDescription?.summary ?? item.metadata?.description ?? '';
     const description = normalizeToString(descriptionSource);
 
-    // Use direct SAS token URL (false for images, true for videos)
-    const src = await sasTokenService.getBlobUrl(item.name, false);
-    console.log(`Using direct blob URL for ${item.name}`);
+    // Use the new asset content endpoint instead of SAS token URLs
+    const src = `/api/v1/gallery/assets/${item.id}/content`;
+    console.log(`Using asset content endpoint for ${item.name}: ${src}`);
 
-    // Extract tags from CosmosDB analysis structure
-    const tags = normalizeTags(item.metadata?.analysis?.tags ?? item.metadata?.tags);
+    // Extract tags from Dataverse analysis structure
+    const tagsForExtraction = parseAnalysisData(item.metadata?.analysis);
+    const tags = normalizeTags(tagsForExtraction?.tags ?? item.metadata?.tags);
 
-    // Extract analysis results from CosmosDB nested structure
+    // Extract analysis results from Dataverse nested structure
     let analysis: ImageMetadata['analysis'] = undefined;
     if (item.metadata?.analysis) {
-      const analysisData = item.metadata.analysis;
+      const analysisData = parseAnalysisData(item.metadata.analysis);
       analysis = {
-        summary: normalizeToString(analysisData.summary),
-        products: normalizeToString(analysisData.products),
-        feedback: normalizeToString(analysisData.feedback),
-        tags: normalizeTags(analysisData.tags),
-        analyzed: item.metadata.has_analysis === true || analysisData.analyzed === true,
+        summary: normalizeToString(analysisData?.summary),
+        products: normalizeToString(analysisData?.products),
+        feedback: normalizeToString(analysisData?.feedback),
+        tags: normalizeTags(analysisData?.tags),
+        analyzed: (item.metadata.has_analysis === true) || (analysisData?.analyzed === true),
       };
     }
 

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, forwardRef, useEffect } from 'react';
-import { isAzureBlobStorageUrl } from '@/utils/image-utils';
+import { isDataverseContentUrl } from '@/utils/image-utils';
 import { 
   generatePosterUrl, 
   getVideoAttributes,
@@ -62,10 +62,10 @@ export const OptimizedVideo = forwardRef<HTMLVideoElement, OptimizedVideoProps>(
     
     // Generate poster URL if not provided and config requires it
     const posterUrl = customPoster || 
-      (config.poster && isAzureBlobStorageUrl(src) ? generatePosterUrl(src) : undefined);
+      (config.poster && isDataverseContentUrl(src) ? generatePosterUrl(src) : undefined);
     
-    // Generate video sources for Azure Blob Storage
-    const videoSources = isAzureBlobStorageUrl(src) ? generateVideoSources(src) : [{ src, type: 'video/mp4' }];
+    // Generate video sources for Dataverse content
+    const videoSources = isDataverseContentUrl(src) ? generateVideoSources(src) : [{ src, type: 'video/mp4' }];
 
     // Set up intersection observer for lazy loading
     useEffect(() => {

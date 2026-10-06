@@ -54,7 +54,7 @@ class VideoGenerationJobResponse(BaseModel):
 class VideoAnalyzeRequest(BaseModel):
     """Request model for analyzing video content"""
     video_path: str = Field(...,
-                            description="Path to the video file on Azure Blob Storage. Supports a full URL with or without a SAS token.")
+                            description="Path to the video file in Dataverse. Internal reference ID.")
 
 
 class VideoAnalyzeResponse(BaseModel):

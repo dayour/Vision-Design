@@ -11,8 +11,8 @@ import { toast } from "sonner";
 interface AuthStatus {
   authenticated: boolean;
   error?: string;
-  account?: any;
-  context?: any;
+  account?: Record<string, unknown> | null;
+  context?: Record<string, unknown> | null;
   method?: string;
   note?: string;
   environment_info?: string;
@@ -98,6 +98,17 @@ export function CliAuthStatus() {
       return <Badge variant="secondary">Not Installed</Badge>;
     } else {
       return <Badge variant="destructive">Not Connected</Badge>;
+    }
+  };
+
+  const stringifyUnknown = (obj: unknown) => {
+    try {
+      if (!obj) return '';
+      if (typeof obj === 'string') return obj;
+      if (typeof obj === 'number' || typeof obj === 'boolean') return String(obj);
+      return JSON.stringify(obj);
+    } catch {
+      return String(obj);
     }
   };
 
@@ -204,11 +215,11 @@ export function CliAuthStatus() {
                         
                         {status.authenticated ? (
                           <div className="text-xs text-muted-foreground">
-                            {status.account?.name && (
-                              <p>Account: {status.account.name}</p>
+                            {status.account && (
+                              <p>Account: {stringifyUnknown((status.account as Record<string, unknown>)?.name ?? status.account)}</p>
                             )}
-                            {status.context?.account && (
-                              <p>Account: {status.context.account}</p>
+                            {status.context && (
+                              <p>Account: {stringifyUnknown((status.context as Record<string, unknown>)?.account ?? status.context)}</p>
                             )}
                             {status.method && (
                               <p>Method: {status.method}</p>
