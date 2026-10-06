@@ -86,10 +86,10 @@ async def store_image_metadata(request: ImageMetadataRequest) -> Dict[str, Any]:
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error storing image metadata: {e}")
+        logger.error(f"Error storing image metadata: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Internal error: {str(e)}"
+            detail="Internal error storing metadata"
         )
 
 
@@ -139,10 +139,10 @@ async def query_images(request: ImageQueryRequest) -> Dict[str, Any]:
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error querying images: {e}")
+        logger.error(f"Error querying images: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Internal error: {str(e)}"
+            detail="Internal error querying images"
         )
 
 
@@ -184,10 +184,10 @@ async def update_image_tags(record_id: str, request: TagUpdateRequest) -> Dict[s
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error updating tags: {e}")
+        logger.error(f"Error updating tags: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Internal error: {str(e)}"
+            detail="Internal error updating tags"
         )
 
 
@@ -228,10 +228,10 @@ async def delete_image_record(record_id: str) -> Dict[str, Any]:
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error deleting record: {e}")
+        logger.error(f"Error deleting record: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Internal error: {str(e)}"
+            detail="Internal error deleting record"
         )
 
 

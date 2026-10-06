@@ -1,7 +1,9 @@
 {
   "typescript.enablePromptUseWorkspaceTsdk": false,
   "eslint.workingDirectories": [
-    { "mode": "auto" }
+    {
+      "mode": "auto"
+    }
   ],
   "typescript.preferences.importModuleSpecifier": "relative",
   "typescript.tsserver.trace": "off",
@@ -24,5 +26,8 @@
   "scss.lint.unknownAtRules": "ignore",
   "less.lint.unknownAtRules": "ignore",
   "python-envs.defaultEnvManager": "ms-python.python:system",
-  "python-envs.pythonProjects": []
+  "python-envs.pythonProjects": [],
+  "github.copilot.enable": {
+    "markdown": true
+  }
 }
