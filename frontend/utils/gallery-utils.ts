@@ -130,7 +130,7 @@ async function mapGalleryItemToVideoMetadata(item: GalleryItem): Promise<VideoMe
       products: normalizeToString(analysisData?.products),
       feedback: normalizeToString(analysisData?.feedback),
       tags: normalizeTags(analysisData?.tags),
-      analyzed: (item.metadata.has_analysis === true) || (analysisData?.analyzed === true),
+      analyzed: (String(item.metadata.has_analysis).toLowerCase() === 'true') || (analysisData?.analyzed === true),
     };
   }
 
@@ -231,7 +231,7 @@ async function mapGalleryItemToImageMetadata(item: GalleryItem): Promise<ImageMe
         products: normalizeToString(analysisData?.products),
         feedback: normalizeToString(analysisData?.feedback),
         tags: normalizeTags(analysisData?.tags),
-        analyzed: (item.metadata.has_analysis === true) || (analysisData?.analyzed === true),
+        analyzed: (String(item.metadata.has_analysis).toLowerCase() === 'true') || (analysisData?.analyzed === true),
       };
     }
 

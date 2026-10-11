@@ -122,7 +122,7 @@ export const OptimizedVideo = forwardRef<HTMLVideoElement, OptimizedVideoProps>(
     if (!shouldLoad) {
       return (
         <div 
-          ref={videoRef}
+          ref={videoRef as unknown as React.Ref<HTMLDivElement>}
           className={`bg-gray-200 dark:bg-gray-800 flex items-center justify-center ${className}`}
           style={{ width, height }}
         >
@@ -161,7 +161,7 @@ export const OptimizedVideo = forwardRef<HTMLVideoElement, OptimizedVideoProps>(
         className={className}
         width={width}
         height={height}
-        poster={posterUrl}
+        poster={posterUrl ?? undefined}
         muted={finalMuted}
         autoPlay={finalAutoplay}
         controls={finalControls}

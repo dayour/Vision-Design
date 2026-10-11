@@ -37,8 +37,8 @@
 - Git for version control
 
 **Development Environment:**
-- Python 3.12+
-- Node.js 19+ and npm
+- Python 3.14+
+- Node.js 26+ and npm
 - uv package manager
 - Code editor (VSCode recommended)
 
@@ -50,7 +50,7 @@ The quickest way to get started is using GitHub Codespaces, a hosted environment
 
 [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://github.com/codespaces/new?hide_repo_select=true&ref=main&repo=dayour/Vision-Design)
 
-Wait for the Codespace to initialize. Python 3.12, Node.js 19, and dependencies will be automatically installed.
+Wait for the Codespace to initialize. Python 3.14, Node.js 26, and dependencies will be automatically installed.
 
 Now you can continue with [Step 2: Configure Resources.](#step-2-configure-resources)
 

@@ -10,7 +10,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { formatDistanceToNow } from "date-fns";
-import { fetchImages, ImageMetadata as GalleryImageMetadata } from "@/utils/gallery-utils";
+import { fetchImages, ImageMetadata } from "@/utils/gallery-utils";
 import { ImageGalleryCard } from "@/components/image-gallery-card";
 import { ImageCreationContainer } from "@/components/ImageCreationContainer";
 import { Badge } from "@/components/ui/badge";
@@ -19,32 +19,6 @@ import { FolderIcon } from "lucide-react";
 import { PageTransition } from "@/components/ui/page-transition";
 import { ImageDetailView } from "@/components/ImageDetailView";
 import { RowBasedMasonryGrid } from "@/components/RowBasedMasonryGrid";
-
-// For the 'any' type issue, let's define a proper interface
-interface GalleryImageItem {
-  src: string;
-  id: string;
-  name: string;
-  metadata?: {
-    tags?: string;
-    description?: string;
-    [key: string]: unknown;
-  };
-  [key: string]: unknown;
-}
-
-interface ImageMetadata {
-  src: string;
-  title: string;
-  description?: string;
-  id: string;
-  name: string;
-  tags?: string[];
-  originalItem: GalleryImageItem;
-  width?: number;
-  height?: number;
-  size?: "small" | "medium" | "large";
-}
 
 // Separate component that uses useSearchParams
 function NewImagePageContent() {
@@ -92,26 +66,7 @@ function NewImagePageContent() {
       // Fetch images - they will be sorted by creation time (newest first) in the fetchImages function
       const fetchedImagesRaw = await fetchImages(limit, resetImages ? 0 : offset, folderPath || undefined);
       
-      // Convert GalleryImageMetadata to our local ImageMetadata type
-      const fetchedImages = fetchedImagesRaw.map((image: GalleryImageMetadata): ImageMetadata => ({
-        src: image.src,
-        title: image.title,
-        description: image.description,
-        id: image.id,
-        name: image.name,
-        tags: image.tags,
-        originalItem: {
-          src: image.src,
-          id: image.id,
-          name: image.name,
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          metadata: image.originalItem.metadata as any
-        },
-        width: image.width,
-        height: image.height,
-        size: image.size,
-        analysis: image.analysis
-      }));
+      const fetchedImages = fetchedImagesRaw;
       
       if (resetImages) {
         setImages(fetchedImages);
@@ -156,25 +111,7 @@ function NewImagePageContent() {
       // Fetch fresh images
       const fetchedImages = await fetchImages(limit, 0, folderPath || undefined);
       
-      // Map to the expected format
-      const mappedImages: ImageMetadata[] = fetchedImages.map(image => ({
-        src: image.src,
-        title: image.title,
-        description: image.description,
-        id: image.id,
-        name: image.name,
-        tags: image.tags,
-        originalItem: {
-          src: image.src,
-          id: image.id,
-          name: image.name,
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          metadata: image.originalItem.metadata as any
-        },
-        width: image.width,
-        height: image.height,
-        size: image.size
-      }));
+      const mappedImages: ImageMetadata[] = fetchedImages;
       
       setImages(mappedImages);
       setOffset(0);

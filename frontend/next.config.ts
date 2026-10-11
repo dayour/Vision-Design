@@ -65,26 +65,18 @@ const nextConfig: NextConfig = {
     },
     // Enable modern bundling optimizations
     optimizePackageImports: ['lucide-react', '@radix-ui/react-icons'],
-    // Enable turbo mode for faster builds
-    turbo: {
-      rules: {
-        '*.svg': {
-          loaders: ['@svgr/webpack'],
-          as: '*.js',
-        },
+  },
+
+  turbopack: {
+    rules: {
+      '*.svg': {
+        loaders: ['@svgr/webpack'],
+        as: '*.js',
       },
     },
   },
   
   
-  // Disable ESLint during builds
-  eslint: {
-    ignoreDuringBuilds: true,
-  },
-  // Disable TypeScript checks during builds temporarily
-  typescript: {
-    ignoreBuildErrors: true,
-  },
   
   // Enhanced headers with caching and security
   async headers() {

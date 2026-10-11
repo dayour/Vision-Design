@@ -29,7 +29,13 @@ export default function AnalyzePage() {
     }
   }, [settings.customAnalysisPrompt, customPrompt]);
 
-  const handleImageUpload = (file: File) => {
+  const handleImageUpload = (file: File | null) => {
+    if (!file) {
+      setUploadedImage(null);
+      setImagePreview(null);
+      setAnalysisResults(null);
+      return;
+    }
     setUploadedImage(file);
     const reader = new FileReader();
     reader.onload = (e) => setImagePreview(e.target?.result as string);
@@ -96,7 +102,6 @@ export default function AnalyzePage() {
               <CardContent>
                 <ImageUploader 
                   onImageSelected={handleImageUpload}
-                  maxSize={10 * 1024 * 1024} // 10MB limit
                 />
                 {imagePreview && (
                   <div className="mt-4">

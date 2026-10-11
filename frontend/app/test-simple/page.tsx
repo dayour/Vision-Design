@@ -3,7 +3,14 @@
 import { useState, useEffect } from 'react';
 import { API_BASE_URL } from '@/services/api';
 
-async function testApiConnection() {
+interface ApiTestResult {
+  baseUrl: string;
+  health: { status: number; ok: boolean; data: unknown };
+  images: { status: number; ok: boolean; data: unknown };
+  environment: Record<string, string | undefined>;
+}
+
+async function testApiConnection(): Promise<ApiTestResult> {
   try {
     console.log('Testing API connection to:', API_BASE_URL);
     
@@ -50,7 +57,7 @@ async function testApiConnection() {
 
 export default function TestSimplePage() {
   const [status, setStatus] = useState('Starting API tests...');
-  const [data, setData] = useState(null);
+  const [data, setData] = useState<ApiTestResult | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {

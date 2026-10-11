@@ -1,22 +1,20 @@
-import { dirname } from "path";
-import { fileURLToPath } from "url";
-import { FlatCompat } from "@eslint/eslintrc";
+import { defineConfig, globalIgnores } from "eslint/config";
+import nextVitals from "eslint-config-next/core-web-vitals";
+import nextTs from "eslint-config-next/typescript";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
-const compat = new FlatCompat({
-  baseDirectory: __dirname,
-});
-
-const eslintConfig = [
-  ...compat.extends("next/core-web-vitals", "next/typescript"),
+export default defineConfig([
+  ...nextVitals,
+  ...nextTs,
   {
-    ignores: [
-      ".next/**",
-      "node_modules/**"
-    ]
-  }
-];
-
-export default eslintConfig;
+    // React Compiler era rules introduced in eslint-plugin-react-hooks v7; surfaced as warnings until the code is migrated.
+    rules: {
+      "react-hooks/set-state-in-effect": "warn",
+      "react-hooks/refs": "warn",
+      "react-hooks/immutability": "warn",
+      "react-hooks/static-components": "warn",
+      "react-hooks/purity": "warn",
+      "react-hooks/incompatible-library": "warn",
+    },
+  },
+  globalIgnores([".next/**", "node_modules/**", "out/**", "build/**", "next-env.d.ts"]),
+]);

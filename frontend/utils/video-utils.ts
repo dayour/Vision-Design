@@ -2,8 +2,6 @@
  * Utility functions for handling video URLs and optimization for Dataverse
  */
 
-import { isDataverseContentUrl } from './image-utils';
-
 /**
  * Supported video formats for different use cases
  */
@@ -85,16 +83,10 @@ export function isModernVideoFormat(url: string): boolean {
 }
 
 /**
- * Generate poster image URL from video URL (Azure Blob Storage)
+ * Dataverse assets expose a single content URL, so there is no separate poster image to derive.
  */
-export function generatePosterUrl(videoUrl: string): string | null {
-  if (!isAzureBlobStorageUrl(videoUrl)) return null;
-  
-  // For Azure Blob Storage, try to find a corresponding poster image
-  const baseUrl = getAzureBlobBaseUrl(videoUrl);
-  const posterUrl = baseUrl.replace(/\.(mp4|webm|ogg|avi|mov|wmv|flv|mkv|m4v|3gp)$/i, '_poster.jpg');
-  
-  return posterUrl !== baseUrl ? posterUrl : null;
+export function generatePosterUrl(_videoUrl: string): string | null {
+  return null;
 }
 
 /**
@@ -113,27 +105,10 @@ export function shouldLazyLoadVideo(index: number, isAboveFold: boolean = false)
 }
 
 /**
- * Generate video source elements for multiple formats
+ * Generate video source elements; Dataverse serves one rendition per asset.
  */
 export function generateVideoSources(baseUrl: string): Array<{ src: string; type: string }> {
-  if (!isAzureBlobStorageUrl(baseUrl)) {
-    return [{ src: baseUrl, type: `video/${getVideoFormat(baseUrl) || 'mp4'}` }];
-  }
-  
-  const sources = [];
-  const baseWithoutExt = getAzureBlobBaseUrl(baseUrl).replace(/\.[^.]+$/, '');
-  const sasToken = hasAzureSasToken(baseUrl) ? baseUrl.split('?')[1] : '';
-  
-  // Try modern formats first
-  for (const format of VIDEO_FORMATS.modern) {
-    const src = sasToken ? `${baseWithoutExt}.${format}?${sasToken}` : `${baseWithoutExt}.${format}`;
-    sources.push({
-      src,
-      type: `video/${format === 'av1' ? 'mp4; codecs="av01"' : format}`,
-    });
-  }
-  
-  return sources;
+  return [{ src: baseUrl, type: `video/${getVideoFormat(baseUrl) || 'mp4'}` }];
 }
 
 /**
@@ -185,19 +160,9 @@ export const VIDEO_CACHE_CONFIG = {
 } as const;
 
 /**
- * Generate video thumbnail URL for Azure Blob Storage
+ * Dataverse assets expose a single content URL, so thumbnails are not derived from the video URL.
  */
-export function generateThumbnailUrl(
-  videoUrl: string, 
-  timeOffset: number = 1
-): string | null {
-  if (!isAzureBlobStorageUrl(videoUrl)) return null;
-  
-  const baseUrl = getAzureBlobBaseUrl(videoUrl);
-  const thumbnailUrl = baseUrl.replace(
-    /\.(mp4|webm|ogg|avi|mov|wmv|flv|mkv|m4v|3gp)$/i, 
-    `_thumb_${timeOffset}s.jpg`
-  );
-  
-  return thumbnailUrl !== baseUrl ? thumbnailUrl : null;
-} 
+export function generateThumbnailUrl(_videoUrl: string, _timeOffset: number = 1): string | null {
+  return null;
+}
+ 

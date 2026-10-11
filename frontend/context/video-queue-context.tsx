@@ -179,7 +179,7 @@ export function VideoQueueProvider({ children }: { children: React.ReactNode }) 
                         
                         // Use the asset ID returned from upload for analysis
                         const assetId = uploadResponse?.asset_id || uploadResponse?.file_id || fileName;
-                        const contentUrl = uploadResponse?.url || blobUrl;
+                        const contentUrl = uploadResponse?.url;
                         if (assetId && contentUrl) {
                           await analyzeAndUpdateVideoMetadata(assetId, contentUrl);
                         } else {

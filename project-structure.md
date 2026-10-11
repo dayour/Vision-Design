@@ -164,7 +164,7 @@ Vision Design is a multimodal AI content generation platform supporting both vid
 - **Environment Validation**: Status check via `/api/v1/auth/status` endpoint
 
 ### 8. Development Tools
-- **Python 3.13**: Modern Python with type hints
+- **Python 3.14**: Modern Python with type hints
 - **Package Management**:
   - `pyproject.toml`: Python project configuration
   - `requirements.txt`: Python dependencies
@@ -312,8 +312,8 @@ C:/Python313/python.exe vision-design2.0/test_flux.py
 ## Environment Setup
 
 ### Prerequisites
-- Python 3.13 or higher
-- Node.js 18 or higher
+- Python 3.14 or higher
+- Node.js 26 or higher
 - Azure OpenAI access (Sora model)
 - Azure AI Foundry access (Flux models)
 - Microsoft Dataverse environment (optional but recommended)

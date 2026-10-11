@@ -3,7 +3,7 @@ name = "video-gen"
 version = "0.1.0"
 description = "Create and manage creative content"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.14"
 dependencies = [
     "fastapi[standard]>=0.115.12",
     "azure-identity>=1.17.1",
